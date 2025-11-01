@@ -1,0 +1,98 @@
+cabal-version: 2.2
+
+-- This file has been generated from package.yaml by hpack version 0.38.1.
+--
+-- see: https://github.com/sol/hpack
+
+name:           stc
+version:        0.1.0.0
+description:    Please see the README on GitHub at <https://github.com/githubuser/stc#readme>
+homepage:       https://github.com/githubuser/stc#readme
+bug-reports:    https://github.com/githubuser/stc/issues
+author:         Author name here
+maintainer:     example@example.com
+copyright:      2025 Author name here
+license:        BSD-3-Clause
+license-file:   LICENSE
+build-type:     Simple
+extra-source-files:
+    README.md
+    CHANGELOG.md
+
+source-repository head
+  type: git
+  location: https://github.com/githubuser/stc
+
+library
+  exposed-modules:
+      ST.AST
+      ST.Parser
+      ST.Semantic
+  other-modules:
+      ST.FFI
+  autogen-modules:
+  hs-source-dirs:
+      src
+  ghc-options: -Wall -Wcompat -Widentities -Wincomplete-record-updates -Wincomplete-uni-patterns -Wmissing-export-lists -Wmissing-home-modules -Wpartial-fields -Wredundant-constraints
+  build-depends:
+      bytestring ^>=0.12.2.0
+    , base >=4.7 && <5
+    , megaparsec
+    , text
+    , containers
+    , parser-combinators
+  default-language: Haskell2010
+
+test-suite p
+  type: exitcode-stdio-1.0
+  main-is: Spec.hs
+  other-modules: 
+  autogen-modules:
+  hs-source-dirs:
+      test
+  ghc-options: -Wall -Wcompat -Widentities -Wincomplete-record-updates -Wincomplete-uni-patterns -Wmissing-export-lists -Wmissing-home-modules -Wpartial-fields -Wredundant-constraints -threaded -rtsopts -with-rtsopts=-N
+  build-depends:
+      base >=4.7 && <5
+    , hspec
+    , megaparsec
+    , stc
+    , text
+    , containers
+  default-language: Haskell2010
+
+test-suite s
+  type: exitcode-stdio-1.0
+  main-is: SemanticSpec.hs
+  other-modules: 
+  autogen-modules:
+  hs-source-dirs:
+      test
+  ghc-options: -Wall -Wcompat -Widentities -Wincomplete-record-updates -Wincomplete-uni-patterns -Wmissing-export-lists -Wmissing-home-modules -Wpartial-fields -Wredundant-constraints -threaded -rtsopts -with-rtsopts=-N
+  build-depends:
+      base >=4.7 && <5
+    , hspec
+    , megaparsec
+    , stc
+    , text
+    , containers
+  default-language: Haskell2010
+
+foreign-library stc-ffi
+  type:             native-shared
+  if os(windows)
+    options: standalone
+  mod-def-file:     exports.def
+  hs-source-dirs:   src
+  other-modules:
+    ST.FFI
+    ST.AST
+    ST.Parser
+    ST.Semantic
+  build-depends:
+      base >=4.7 && <5
+    , text
+    , bytestring
+    , megaparsec
+    , containers
+    , parser-combinators
+  default-language: Haskell2010

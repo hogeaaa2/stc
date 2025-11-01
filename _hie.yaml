@@ -1,0 +1,13 @@
+cradle:
+  stack:
+    - path: "./src"
+      component: "stc:lib"
+
+    - path: "./test"
+      component: "stc:test:stc-test"
+
+    - path: "./test"
+      component: "stc:test:stc-test-semant"
+
+    - path: "./src"
+      component: "stc:lib:stc-ffi"

@@ -1,0 +1,3 @@
+LIBRARY "stc-ffi"
+EXPORTS
+    st_parse_program_ok

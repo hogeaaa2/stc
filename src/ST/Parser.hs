@@ -1,0 +1,937 @@
+{-# LANGUAGE OverloadedStrings #-}
+{-# OPTIONS_GHC -Wno-partial-fields #-}
+{-# OPTIONS_GHC -Wno-unrecognised-pragmas #-}
+
+{-# HLINT ignore "Use fromMaybe" #-}
+
+module ST.Parser
+  ( parseProgram,
+    parseUnit,
+    identifier,
+    pUnit,
+    pStmt,
+    pExpr,
+    pTypeBlock,
+    pVariable,
+    pInt,
+    pReal,
+  )
+where
+
+import Control.Monad (void)
+import Control.Monad.Combinators.Expr
+  ( Operator (..),
+    makeExprParser,
+  )
+import Data.Char (isAsciiLower, isAsciiUpper, isDigit, isHexDigit, isOctDigit, toUpper)
+import Data.Functor (($>))
+import Data.List (isInfixOf)
+import qualified Data.List.NonEmpty as NE
+import Data.Maybe (fromMaybe, isJust, maybeToList)
+import Data.Set (Set)
+import qualified Data.Set as Set
+import Data.Text (Text)
+import qualified Data.Text as T
+import Data.Void (Void)
+import ST.AST
+import Text.Megaparsec
+  ( MonadParsec (..),
+    Parsec,
+    anySingle,
+    atEnd,
+    between,
+    choice,
+    empty,
+    eof,
+    getOffset,
+    getSourcePos,
+    lookAhead,
+    many,
+    manyTill,
+    observing,
+    oneOf,
+    optional,
+    parse,
+    registerParseError,
+    satisfy,
+    sepBy,
+    sepBy1,
+    some,
+    someTill,
+    withRecovery,
+    (<|>),
+  )
+import Text.Megaparsec.Char
+  ( char,
+    digitChar,
+    space1,
+    string,
+  )
+import qualified Text.Megaparsec.Char.Lexer as L
+  ( decimal,
+    lexeme,
+    skipBlockCommentNested,
+    skipLineComment,
+    space,
+    symbol',
+  )
+import Text.Megaparsec.Error
+import Text.Megaparsec.Pos (initialPos)
+
+type Parser = Parsec Void Text
+
+data DollarPolicy = DollarPolicy
+  { allowDollarSingle :: Bool,
+    allowDollarDouble :: Bool
+  }
+
+stringPolicy, wstringPolicy :: DollarPolicy
+stringPolicy = DollarPolicy {allowDollarSingle = True, allowDollarDouble = False} -- STRING
+wstringPolicy = DollarPolicy {allowDollarSingle = False, allowDollarDouble = True} -- WSTRING
+
+reserved :: Set Text
+reserved =
+  Set.fromList
+    [ "PROGRAM",
+      "VAR",
+      "END_VAR",
+      "INT",
+      "BOOL",
+      "TRUE",
+      "FALSE",
+      "CONSTANT",
+      "NOT",
+      "AND",
+      "OR",
+      "IF",
+      "THEN",
+      "ELSIF",
+      "ELSE",
+      "END_IF",
+      "WHILE",
+      "DO",
+      "END_WHILE",
+      "REPEAT",
+      "UNTIL",
+      "END_REPEAT",
+      "CASE",
+      "OF",
+      "END_CASE",
+      "TYPE",
+      "END_TYPE",
+      "STRUCT",
+      "END_STRUCT",
+      "ARRAY",
+      "FOR",
+      "TO",
+      "BY",
+      "END_FOR",
+      "MOD",
+      "XOR",
+      "REAL",
+      "LREAL",
+      "STRING",
+      "SINT",
+      "DINT",
+      "LINT",
+      "USINT",
+      "UINT",
+      "UDINT",
+      "ULINT",
+      "BYTE",
+      "WORD",
+      "DWORD",
+      "LWORD"
+    ]
+
+------------------
+-- utils
+------------------
+withSpan :: Parser a -> Parser (Loc a)
+withSpan p = do
+  s <- getSourcePos
+  x <- p
+  e <- getSourcePos
+  pure (Loc (Span s e) x)
+
+-- 失敗を飲み込み、エラーだけ登録して続行（Nothing で返す）
+soft :: Parser a -> Parser (Maybe a)
+soft p = do
+  r <- observing (try p)
+  case r of
+    Right x -> pure (Just x)
+    Left e -> registerParseError e >> pure Nothing
+
+-- 必須キーワード（無ければキーワードをエラー報告して続行）
+kw :: Text -> Parser ()
+kw t = void $ softLabel t $ symbol t
+
+-- 文レベルの同期点まで読み飛ばす（; / ELSIF / ELSE / END_* / EOF）
+skipToStmtSync :: Parser ()
+skipToStmtSync =
+  void $ manyTill anySingle ender
+  where
+    syncTok :: Parser Text
+    syncTok =
+      choice
+        ( map
+            symbol
+            [ ";",
+              "ELSIF",
+              "ELSE",
+              "END_IF",
+              "END_WHILE",
+              "UNTIL",
+              "END_REPEAT",
+              "END_CASE"
+            ]
+        )
+    ender :: Parser ()
+    ender = (void . lookAhead $ syncTok) <|> eof
+
+-- 「期待 <label>」を現在位置に1件登録（失敗はしない）
+registerExpectLabel :: Text -> Parser ()
+registerExpectLabel lbl = do
+  off <- getOffset
+  let item = Label (NE.fromList (T.unpack lbl)) -- expecting <label>
+  registerParseError (TrivialError off Nothing (Set.singleton item))
+
+-- 失敗したら「期待 <label>」を登録して続行
+softLabel :: Text -> Parser a -> Parser (Maybe a)
+softLabel lbl p = do
+  r <- observing (try p)
+  case r of
+    Right x -> pure (Just x)
+    Left _ -> registerExpectLabel lbl >> pure Nothing
+
+unknownSpan :: Span
+unknownSpan = let p = initialPos "<unknown>" in Span p p
+
+-- readBaseInt :: Int -> String -> Maybe Int
+-- readBaseInt b s =
+--   case readInt b (isDigitBase b) valBase s of
+--     [(n, "")] -> Just n
+--     _ -> Nothing
+
+stripUnders :: String -> String
+stripUnders = filter (/= '_')
+
+noDoubleUnders :: String -> Bool
+noDoubleUnders s = not ("__" `isInfixOf` s)
+
+-- 10進「桁間のみ '_'」許容（先頭・末尾・連続不可）
+decDigitsStrict :: Parser String
+decDigitsStrict = do
+  d0 <- digitChar
+  ds <- many (digitChar <|> try (char '_' *> digitChar))
+  pure (d0 : ds)
+
+-- 10進「末尾に '_' が来ても OK」（直後に '.' が来る想定の整数部用）
+decDigitsAllowTrailUnders :: Parser String
+decDigitsAllowTrailUnders = do
+  d0 <- digitChar
+  ds <- many (digitChar <|> char '_') -- ここでは末尾 '_' を許容
+  pure (d0 : ds)
+
+-- 10進「先頭に '_' があっても OK」（直前が '.' の小数部先頭用）
+decDigitsAllowLeadUnders :: Parser String
+decDigitsAllowLeadUnders = do
+  us <- many (char '_') -- 前置 '_' を許容
+  d0 <- digitChar -- 必ずどこかで1桁は必要
+  ds <- many (digitChar <|> try (char '_' *> digitChar))
+  pure (replicate (length us) '_' ++ (d0 : ds))
+
+readBaseInt :: Int -> String -> Int
+readBaseInt b s0 =
+  let s = stripUnders s0
+      val c
+        | b == 16 =
+            let x = toUpper c
+             in if isDigit c
+                  then fromEnum c - 48
+                  else fromEnum x - 55 -- 'A'.. -> 10..
+        | otherwise = fromEnum c - 48
+   in foldl (\acc c -> acc * b + val c) 0 s
+
+delimOf :: DollarPolicy -> Char
+delimOf pol = if allowDollarSingle pol then '\'' else '"'
+
+------------------
+-- lexer
+------------------
+
+sc :: Parser ()
+sc =
+  L.space
+    space1
+    (L.skipLineComment "//")
+    (L.skipBlockCommentNested "(*" "*)")
+
+lexeme :: Parser a -> Parser a
+lexeme = L.lexeme sc
+
+-- キーワード（エラー報告なし）
+symbol :: Text -> Parser Text
+symbol = L.symbol' sc
+
+isLetter :: Char -> Bool
+isLetter c = isAsciiLower c || isAsciiUpper c
+
+isLetterDigit :: Char -> Bool
+isLetterDigit c = isLetter c || isDigit c
+
+identifier :: Parser Identifier
+identifier = withSpan $ lexeme $ do
+  first <- choice [l, usld]
+  rest <- many $ choice [ld, usld]
+  let result = T.append first (T.concat rest)
+   in if not $ Set.member (T.toUpper result) reserved
+        then pure result
+        else do
+          off <- getOffset
+          let item = Label (NE.fromList (T.unpack result))
+          registerParseError
+            ( TrivialError
+                off
+                (Just item)
+                (Set.singleton $ Label $ NE.fromList "non-reserved string")
+            )
+          pure ""
+  where
+    l :: Parser Text
+    l = T.singleton <$> satisfy isLetter
+
+    ld :: Parser Text
+    ld = T.singleton <$> satisfy isLetterDigit
+
+    usld :: Parser Text
+    usld = do
+      us <- char '_'
+      c <- satisfy isLetterDigit
+      pure $ T.cons us (T.singleton c)
+
+semicolon :: Parser Char
+semicolon = lexeme $ char ';'
+
+colon :: Parser Char
+colon = lexeme $ char ':'
+
+assignOp :: Parser Text
+assignOp = symbol ":="
+
+parens :: Parser a -> Parser a
+parens = between (symbol "(") (symbol ")")
+
+brackets :: Parser a -> Parser a
+brackets = between (symbol "[") (symbol "]")
+
+------------------
+-- parser
+------------------
+pInt :: Parser Int
+pInt = lexeme $ do
+  -- 先頭符号（オプション）
+  msign <- optional (char '+' <|> char '-')
+  mbBase <-
+    optional . try $
+      choice
+        [ 2 <$ string "2#",
+          8 <$ string "8#",
+          10 <$ string "10#",
+          16 <$ string "16#"
+        ]
+  n <- case mbBase of
+    -- 基数付き：CODESYS 準拠で先頭/末尾 '_' も許容。ただし "__" は不可。
+    Just b -> do
+      let isDigitB c
+            | b == 2 = c == '0' || c == '1'
+            | b == 8 = isOctDigit c
+            | b == 10 = isDigit c
+            | b == 16 = isHexDigit c
+            | otherwise = False
+      raw <- some (satisfy (\c -> isDigitB c || c == '_'))
+      -- 少なくとも1桁の“基数桁”を含む & "__" が無い
+      if any isDigitB raw && noDoubleUnders raw
+        then pure (readBaseInt b raw)
+        else fail "invalid based integer literal"
+    -- 10進：桁間 '_' のみ許容（先頭/末尾/連続不可）
+    Nothing -> do
+      read . stripUnders <$> decDigitsStrict
+  -- 符号を適用
+  pure $ case msign of
+    Just '-' -> negate n
+    _ -> n
+
+pBool :: Parser Bool
+pBool = (True <$ symbol "TRUE") <|> (False <$ symbol "FALSE")
+
+pTypedReal :: Parser Expr
+pTypedReal =
+  choice
+    [ ELREAL <$> (symbol "LREAL" *> symbol "#" *> pReal),
+      EREAL <$> (symbol "REAL" *> symbol "#" *> pReal)
+    ]
+
+-- 文字列リテラル：ポリシーを受け取る版
+pStringLitWith :: DollarPolicy -> (Text -> Expr) -> Parser Expr
+pStringLitWith pol strType = lexeme $ do
+  delim <- char $ delimOf pol
+  txt <- T.pack <$> manyTill (strCharWith pol delim) (char delim)
+  pure $ strType txt
+
+pCharLitWith :: DollarPolicy -> (Char -> Expr) -> Parser Expr
+pCharLitWith pol chrType = lexeme $ do
+  delim <- char $ delimOf pol
+  c <- strCharWith pol delim
+  _ <- char $ delimOf pol
+  pure $ chrType c
+
+pStringLit :: Parser Expr
+pStringLit = pStringLitWith stringPolicy ESTRING
+
+pWStringLit :: Parser Expr
+pWStringLit = pStringLitWith wstringPolicy EWSTRING
+
+pCharLit :: Parser Expr
+pCharLit = pCharLitWith stringPolicy ECHAR
+
+pWCharLit :: Parser Expr
+pWCharLit = pCharLitWith wstringPolicy EWCHAR
+
+-- 1 文字（通常 or $エスケープ）
+strCharWith :: DollarPolicy -> Char -> Parser Char
+strCharWith pol delim =
+  choice
+    [ char '$' *> dollarEscape pol,
+      satisfy (\c -> c /= delim && c /= '\n' && c /= '\r')
+    ]
+
+dollarEscape :: DollarPolicy -> Parser Char
+dollarEscape pol = label "escape" $ do
+  c <- satisfy (\x -> isAsciiLower x || isAsciiUpper x || x == '$' || x == '\'' || x == '"')
+  case c of
+    '$' -> pure '$'
+    '\'' ->
+      if allowDollarSingle pol
+        then pure '\''
+        else fail "$' escape is not allowed for this string type"
+    '"' ->
+      if allowDollarDouble pol
+        then pure '"'
+        else fail "$\" escape is not allowed for this string type"
+    'L' -> pure '\n'
+    'l' -> pure '\n'
+    -- \$L/$l → LF
+    'N' -> pure '\n'
+    'n' -> pure '\n'
+    -- \$N/$n → LF（CODESYS に合わせて $L と同義）
+    'P' -> pure '\f'
+    'p' -> pure '\f'
+    -- \$P/$p → FF
+    'R' -> pure '\r'
+    'r' -> pure '\r'
+    -- \$R/$r → CR
+    'T' -> pure '\t'
+    't' -> pure '\t'
+    -- \$T/$t → TAB
+    _ -> fail "unknown $-escape"
+
+pPrimaryE :: Parser Expr
+pPrimaryE =
+  choice
+    [ pArrayAgg,
+      try pStructAgg,
+      parens pExpr,
+      try pCharLit,
+      try pWCharLit,
+      pStringLit,
+      pWStringLit,
+      EBOOL <$> pBool,
+      try pTypedReal,
+      EREAL <$> try pReal, -- 無印はREAL扱い
+      EINT <$> pInt,
+      EVar <$> identifier
+    ]
+
+dot1 :: Parser ()
+dot1 = void $ lexeme $ try (char '.' *> notFollowedBy (char '.'))
+
+-- フィールド/添字のポストフィックス（式用）
+pPostfixE :: Expr -> Parser Expr
+pPostfixE = go
+  where
+    go e = do
+      m <- optional (choice [field e, index e])
+      maybe (pure e) go m
+
+    field e' = do
+      dot1
+      EField e' <$> identifier
+
+    index e'' = do
+      is <- brackets (pExpr `sepBy1` symbol ",")
+      pure (EIndex e'' is)
+
+-- フィールド/添字のポストフィックス（左辺用）
+pPostfixL :: LValue -> Parser LValue
+pPostfixL = go
+  where
+    go l = do
+      m <- optional (choice [field l, index l])
+      maybe (pure l) go m
+
+    field l' = do
+      dot1
+      LField l' <$> identifier
+
+    index l'' = do
+      is <- brackets (pExpr `sepBy1` symbol ",")
+      pure (LIndex l'' is)
+
+pExpr :: Parser Expr
+pExpr = makeExprParser pTerm table
+  where
+    pTerm = pPrimaryE >>= pPostfixE
+    table =
+      [ -- precedence 9
+        [ prefix "-" ENeg,
+          prefix "+" id,
+          prefix "NOT" ENot
+        ],
+        -- Exponentiation (precedence 8) is defined in IEC61131-3
+        -- but not supported in CODESYS.
+        -- https://content.helpme-codesys.com/en/CODESYS%20Development%20System/_cds_st_expressions.html
+
+        -- precedence 7
+        [ binary "*" EMul,
+          binary "/" EDiv,
+          binary "MOD" EMod
+        ],
+        -- precedence 6
+        [ binary "+" EAdd,
+          binary "-" ESub
+        ],
+        -- precedence 5&4
+        [ comp "<=" ELe,
+          comp ">=" EGe,
+          comp "<>" ENe,
+          comp "<" ELt,
+          comp ">" EGt,
+          comp "=" EEq
+        ],
+        -- precedence 3
+        [binary "AND" EAnd],
+        -- precedence 2
+        [binary "XOR" EXor],
+        -- precedence 1
+        [binary "OR" EOr]
+      ]
+
+    binary, comp :: Text -> (Expr -> Expr -> Expr) -> Operator Parser Expr
+    binary name f = InfixL (f <$ symbol name)
+    comp name f = InfixN (f <$ symbol name)
+    -- exp name f = InfixR (f <$ symbol name)
+
+    prefix :: Text -> (Expr -> Expr) -> Operator Parser Expr
+    prefix name f = Prefix (f <$ symbol name)
+
+-- postfix :: Text -> (Expr -> Expr) -> Operator Parser Expr
+-- postfix name f = Postfix (f <$ symbol name)
+
+-- pLValue :: Parser LValue
+-- pLValue = do
+--   x <- identifier
+--   fs <- many (symbol "." *> identifier)
+--   pure (foldl LField (LVar x) fs)
+
+-- 10進 REAL リテラル（最小）： 1.0 / 0.5 / 12e-3 / 3. / 0E+5 など
+-- 仕様: 先頭に少なくとも1桁、(小数 or 指数) のどちらか必須
+pReal :: Parser Double
+pReal = lexeme $ do
+  -- 整数部：末尾 '_' も許容（直後に '.' が来る前提）
+  intPart <- decDigitsAllowTrailUnders
+  _ <- char '.'
+  -- 小数部：先頭 '_' も許容（直前が '.'）
+  fracPart <- decDigitsAllowLeadUnders
+
+  -- 指数部（任意）：桁間 '_' は許容、先頭/末尾 '_' は不可
+  mExp <- optional $ do
+    e <- oneOf ['e', 'E']
+    s <- optional (oneOf ['+', '-'])
+    d0 <- digitChar
+    ds <- many (digitChar <|> try (char '_' *> digitChar))
+    let digits = d0 : ds
+    pure (e : maybeToList s ++ stripUnders digits)
+
+  let numStr = stripUnders intPart ++ "." ++ stripUnders fracPart ++ maybe "" id mExp
+  pure (read numStr)
+
+-- 構造体集成: (name := expr, ...)
+pStructAgg :: Parser Expr
+pStructAgg = lexeme . try $ do
+  _ <- symbol "("
+  -- 先読みで "識別子 :=" を確認
+  i0 <- identifier
+  _ <- symbol ":="
+  e0 <- pExpr
+  rest <- many (symbol "," *> ((,) <$> identifier <* symbol ":=" <*> pExpr))
+  _ <- symbol ")"
+  pure $ EStructAgg ((i0, e0) : rest)
+
+-- 配列集成: [expr, expr, ...]
+pArrayAgg :: Parser Expr
+pArrayAgg = lexeme $ do
+  _ <- symbol "["
+  es <- pExpr `sepBy` symbol ","
+  _ <- symbol "]"
+  pure $ EArrayAgg es
+
+pUnit :: Parser Unit
+pUnit = do
+  tys <- many pTypeBlock
+  prg <- pProgram
+  pure (Unit (concat tys) [prg])
+
+pTypeBlock :: Parser [TypeDecl]
+pTypeBlock = do
+  _ <- symbol "TYPE"
+  someTill pOneType (symbol "END_TYPE")
+  where
+    pOneType = do
+      nm <- identifier
+      _ <- symbol ":"
+      ty <- pSTType
+      _ <- symbol ";"
+      pure (TypeDecl nm ty)
+
+pSTType :: Parser STType
+pSTType =
+  choice
+    [ pStructType,
+      pEnumType,
+      pArrayType,
+      SINT <$ symbol "SINT",
+      INT <$ symbol "INT",
+      DINT <$ symbol "DINT",
+      LINT <$ symbol "LINT",
+      USINT <$ symbol "USINT",
+      UINT <$ symbol "UINT",
+      UDINT <$ symbol "UDINT",
+      ULINT <$ symbol "ULINT",
+      BYTE <$ symbol "BYTE",
+      WORD <$ symbol "WORD",
+      DWORD <$ symbol "DWORD",
+      LWORD <$ symbol "LWORD",
+      BOOL <$ symbol "BOOL",
+      REAL <$ symbol "REAL",
+      LREAL <$ symbol "LREAL",
+      CHAR <$ symbol "CHAR",
+      WCHAR <$ symbol "WCHAR",
+      pStringType,
+      pWStringType,
+      Named <$> identifier
+    ]
+
+pWStringType :: Parser STType
+pWStringType = do
+  _ <- symbol "WSTRING"
+  mlen <- optional (parens L.decimal <|> brackets L.decimal)
+  pure (WSTRING mlen)
+
+-- STRING または STRING(n) / STRING[n] を受理し、長さを保持
+pStringType :: Parser STType
+pStringType = do
+  _ <- symbol "STRING"
+  mlen <- optional (parens L.decimal <|> brackets L.decimal)
+  pure (STRING mlen)
+
+-- ( Red := 0, Green, Blue := 1+2 )
+pEnumType :: Parser STType
+pEnumType = do
+  _ <- symbol "("
+  xs <- pOne `sepBy1` symbol ","
+  _ <- symbol ")"
+  pure (Enum xs)
+  where
+    pOne = do
+      nm <- identifier
+      mv <- optional (symbol ":=" *> pExpr)
+      pure (nm, mv)
+
+pArrayType :: Parser STType
+pArrayType = do
+  _ <- symbol "ARRAY"
+  _ <- symbol "["
+  rs <- pIdxRange `sepBy1` symbol ","
+  _ <- symbol "]"
+  kw "OF"
+  Array rs <$> pSTType
+  where
+    pIdxRange = do
+      lo <- pInt
+      _ <- symbol ".."
+      ArrRange lo <$> pInt
+
+pStructType :: Parser STType
+pStructType = do
+  _ <- symbol "STRUCT"
+  fields <- manyTill pField (symbol "END_STRUCT")
+  pure (Struct fields)
+  where
+    pField = do
+      f <- identifier
+      _ <- symbol ":"
+      t <- pSTType
+      _ <- symbol ";"
+      pure (f, t)
+
+pProgram :: Parser Program
+pProgram = do
+  _ <- symbol "PROGRAM"
+  pn <- identifier
+  vds <- some pVarDecls
+  let vars = concat [vs | VarDecls vs <- vds]
+  body <- many pStmt
+  pure (Program (locVal pn) (VarDecls vars) body)
+
+pVarDecls :: Parser VarDecls
+pVarDecls = lexeme $ do
+  _ <- symbol "VAR"
+  isConst <- isJust <$> optional (symbol "CONSTANT")
+  vs <- manyTill (pVariable isConst) (symbol "END_VAR")
+  pure (VarDecls vs)
+
+-- Var_Decl_Init
+pVariable :: Bool -> Parser Variable
+pVariable isConst = lexeme $ do
+  name <- identifier
+  _ <- colon
+  dt <- pSTType
+  vInit <- optional (assignOp *> lexeme pExpr)
+  _ <- semicolon
+  pure (Variable name dt vInit isConst)
+
+pStmt :: Parser Statement
+pStmt = withRecovery recover pStmtCore
+  where
+    pStmtCore =
+      choice
+        [ pIf,
+          pWhile,
+          pRepeat,
+          pCase,
+          pFor,
+          pAssign,
+          pSkip
+        ]
+
+    recover err = do
+      registerParseError err
+      done <- atEnd
+      if done
+        then empty
+        else do
+          -- すでに同期トークン直前なら、ここでも止める（親の manyTill が拾う）
+          let syncHere =
+                void . lookAhead $
+                  choice $
+                    map
+                      symbol
+                      [ ";",
+                        "ELSIF",
+                        "ELSE",
+                        "END_IF",
+                        "END_WHILE",
+                        "UNTIL",
+                        "END_REPEAT",
+                        "END_CASE"
+                      ]
+          m <- observing syncHere
+          case m of
+            Right _ -> empty -- ここで止めて親に任せる
+            Left _ -> do
+              -- それ以外は同期点まで“進めてから”ダミーを返す
+              skipToStmtSync
+              pure (If (EBOOL True) [] [] [])
+
+pSkip :: Parser Statement
+pSkip = semicolon $> Skip
+
+pAssign :: Parser Statement
+pAssign = do
+  lhs <- pBaseVarL >>= pPostfixL
+  -- ":=" を必須扱いで
+  r1 <- observing assignOp
+  case r1 of
+    Left e -> registerParseError e
+    _ -> pure ()
+  rhs <- fromMaybe (EINT 0) <$> soft pExpr -- rhs 欠落でも前進
+  -- ';' も必須扱い
+  r2 <- observing (symbol ";")
+  case r2 of
+    Left e -> registerParseError e
+    _ -> pure ()
+  pure (Assign lhs rhs)
+
+pIf :: Parser Statement
+pIf = do
+  _ <- symbol "IF"
+  mc <- softLabel "Condition" pExpr
+  let c0 = fromMaybe (EBOOL True) mc
+  kw "THEN"
+  th0 <- manyTill pStmt ((void . lookAhead $ ender) <|> eof)
+  elsifs <- many $ do
+    _ <- symbol "ELSIF"
+    mcE <- softLabel "Condition" pExpr
+    let ce = fromMaybe (EBOOL True) mcE
+    kw "THEN"
+    thE <- manyTill pStmt ((void . lookAhead $ ender) <|> eof)
+    pure (ce, thE)
+
+  mElse <- optional (symbol "ELSE" *> manyTill pStmt (symbol "END_IF"))
+  case mElse of
+    Just els -> pure (If c0 th0 elsifs els)
+    Nothing -> do
+      -- END_IF は “無いときだけ”登録。あれば消費して終わり。
+      r <- observing (symbol "END_IF")
+      case r of
+        Right _ -> pure (If c0 th0 elsifs [])
+        Left _ -> registerExpectLabel "END_IF" >> pure (If c0 th0 elsifs [])
+  where
+    -- ← ここは必ず symbol（kw を使うと見るだけで診断が乗る）
+    ender = symbol "ELSIF" <|> symbol "ELSE" <|> symbol "END_IF"
+
+-- WHILE <expr> DO <stmts> END_WHILE
+pWhile :: Parser Statement
+pWhile = do
+  _ <- symbol "WHILE"
+  mc <- softLabel "Condition" pExpr
+  let cond = maybe (EBOOL True) id mc
+  kw "DO"
+  body <- manyTill pStmt ((void . lookAhead $ symbol "END_WHILE") <|> eof)
+  r <- observing (symbol "END_WHILE")
+  case r of
+    Right _ -> pure (While cond body)
+    Left _ -> registerExpectLabel "END_WHILE" >> pure (While cond body)
+
+-- REPEAT <stmts> UNTIL <expr> END_REPEAT
+pRepeat :: Parser Statement
+pRepeat = do
+  _ <- symbol "REPEAT"
+  body <- manyTill pStmt ((void . lookAhead $ symbol "UNTIL") <|> eof)
+  -- UNTIL が無ければ "UNTIL" だけ
+  rU <- observing (symbol "UNTIL")
+  case rU of
+    Right _ -> pure ()
+    Left _ -> registerExpectLabel "UNTIL"
+  mc <- softLabel "Condition" pExpr
+  let cond = maybe (EBOOL True) id mc
+  rE <- observing (symbol "END_REPEAT")
+  case rE of
+    Right _ -> pure (Repeat body cond)
+    Left _ -> registerExpectLabel "END_REPEAT" >> pure (Repeat body cond)
+
+-- CASE <expr> OF <arm>* [ELSE <stmts>] END_CASE
+pCase :: Parser Statement
+pCase = do
+  _ <- symbol "CASE"
+  me <- softLabel "Expression" pExpr
+  kw "OF"
+  let scrut = fromMaybe (EINT 0) me
+  arms <- manyTill pCaseArm (lookAhead (symbol "ELSE" <|> symbol "END_CASE"))
+  mEls <- optional (symbol "ELSE" *> manyTill pStmt (symbol "END_CASE"))
+  case mEls of
+    Just els -> pure (Case scrut arms els)
+    Nothing -> do
+      r <- observing (symbol "END_CASE")
+      case r of
+        Right _ -> pure (Case scrut arms [])
+        Left e -> registerParseError e >> pure (Case scrut arms [])
+
+-- <selectors> ':' <stmts> ';'
+-- selectors: sel (',' sel)*
+pCaseArm :: Parser CaseArm
+pCaseArm = do
+  sels <- pSelector `sepBy1` symbol ","
+  _ <- symbol ":"
+  body <- manyTill pStmt endArm
+  pure (CaseArm sels body)
+  where
+    endArm :: Parser ()
+    endArm =
+      lookAhead $
+        choice
+          [ void (symbol "ELSE"),
+            void (symbol "END_CASE"),
+            void (try (pSelector `sepBy1` symbol "," *> symbol ":" <* notFollowedBy (char '=')))
+          ]
+
+pSelector :: Parser CaseSelector
+pSelector = do
+  a <- pExpr
+  m <- optional (symbol ".." *> pExpr)
+  case m of
+    Nothing -> pure (CSExpr a)
+    Just b -> pure (CSRangeE a b)
+
+-- -- 便利：識別子起点の“素”デザインタ
+-- pBaseVarE :: Parser Expr
+-- pBaseVarE = EVar <$> identifier
+
+pBaseVarL :: Parser LValue
+pBaseVarL = LVar <$> identifier
+
+-- pEnumLit :: Parser Expr
+-- pEnumLit = do
+--   ty <- identifier
+--   _ <- symbol "."
+--   EEnum ty <$> identifier
+
+-- FOR i := init TO end [BY step] DO stmts END_FOR
+pFor :: Parser Statement
+pFor = do
+  _ <- symbol "FOR"
+
+  -- ① iv := init を “ひとかたまり” で読む（無ければ 1 回だけ Expression 診断）
+  mInit <- optional . try $ do
+    iv' <- identifier
+    _ <- assignOp
+    e0' <- pExpr
+    pure (iv', e0')
+
+  (iv, e0) <- case mInit of
+    Just pair -> pure pair
+    Nothing -> do
+      _ <- softLabel "Control Initialization" pExpr
+      pure (Loc unknownSpan "<for-var>", EINT 0)
+
+  kw "TO" -- 必須
+
+  -- ② end 式：無ければ Expression を 1 回登録し、0 で続行
+  mE1 <- softLabel "Expression" pExpr
+  let e1 = maybe (EINT 0) id mE1
+
+  -- ③ BY があれば step 式：無ければ Expression を登録し、1 にフォールバック
+  mby <- optional $ do
+    _ <- symbol "BY"
+    me <- softLabel "Expression" pExpr
+    pure (maybe (EINT 1) id me)
+
+  kw "DO" -- 必須
+
+  -- ④ 本体：END_FOR 欠落時は診断を積んで空ブロックで回復
+  body <-
+    withRecovery
+      ( \_ -> do
+          _ <- softLabel "END_FOR" (symbol "END_FOR")
+          pure []
+      )
+      (manyTill pStmt (symbol "END_FOR"))
+
+  pure (For iv e0 e1 mby body)
+
+parseProgram :: Text -> Either (ParseErrorBundle Text Void) Program
+parseProgram = parse (pProgram <* eof) "<input>"
+
+parseUnit :: Text -> Either (ParseErrorBundle Text Void) Unit
+parseUnit = parse (sc *> pUnit <* eof) "<input>"
