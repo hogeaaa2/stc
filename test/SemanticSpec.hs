@@ -1546,7 +1546,7 @@ main = hspec $ do
         elaborateUnit u `shouldFailWith1` indexOOB
 
     it "flags out-of-bounds when index is VAR CONSTANT" $ do
-      pendingWith "constructing env with int literal not implemented yet"
+      -- pendingWith "constructing env with int literal not implemented yet"
       let src =
             "PROGRAM P\n\
             \VAR a: ARRAY[0..2] OF INT; x: INT; END_VAR\n\

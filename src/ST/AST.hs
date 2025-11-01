@@ -16,6 +16,8 @@ module ST.AST
     TypeDecl (..),
     LValue (..),
     ArrRange (..),
+    VarInfo (..),
+    VarKind (..),
   )
 where
 
@@ -35,6 +37,24 @@ data Loc a = Loc
   deriving (Eq, Show)
 
 type Identifier = Loc Text
+
+data VarKind
+  = VKLocal -- VAR
+  | VKInput -- VAR_INPUT
+  | VKOutput -- VAR_OUTPUT
+  | VKInOut -- VAR_INOUT
+  | VKTemp -- VAR_TEMP
+  | VKGlobal -- VAR_GLOBAL
+  | VKConstant -- VAR CONSTANT
+  deriving (Eq, Show)
+
+data VarInfo = VarInfo
+  { viType :: STType,
+    viSpan :: Span,
+    viKind :: VarKind,
+    viInit :: Maybe Expr
+  }
+  deriving (Show, Eq)
 
 data Program = Program
   { progName :: Text,
