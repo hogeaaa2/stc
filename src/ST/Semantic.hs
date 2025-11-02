@@ -1,18 +1,44 @@
+{-# LANGUAGE DataKinds #-}
+{-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE TupleSections #-}
+{-# LANGUAGE TypeApplications #-}
+{-# LANGUAGE TypeOperators #-}
 {-# OPTIONS_GHC -Wno-partial-fields #-}
 
 module ST.Semantic
   ( elaborateProgram,
     elaborateUnit,
-    SemantDiag (..),
+    DuplicateVar (..),
+    UnknownVar (..),
+    AssignToConst (..),
+    TypeMismatch (..),
+    TypeMismatch' (..),
+    MissingInitializer (..),
+    UnknownType (..),
+    TypeCycle (..),
+    NotAStruct (..),
+    UnknownStructMember (..),
+    NotAnArray (..),
+    BadIndexCount (..),
+    IndexNotInt (..),
+    AssignToLoopVar (..),
+    UnknownEnumMember (..),
+    NotAnEnum (..),
+    InvalidCaseRange (..),
+    OverlappingCase (..),
+    NonConstantExpr (..),
+    OutOfRange (..),
+    TooManyAggElems (..),
+    IndexOutOfBounds (..),
     nominalEq,
   )
 where
 
 import Control.Monad (forM, forM_, guard, unless, when)
-import Data.Either (fromRight)
+import Data.Either
+import qualified Data.Foldable as VEither
 import Data.List (sortOn)
 import qualified Data.Map.Strict as M
 import Data.Maybe (catMaybes, fromMaybe)
@@ -21,35 +47,109 @@ import Data.Text (Text)
 import qualified Data.Text as T
 import ST.AST
 import Text.Megaparsec.Pos
+import Vary (Vary, (:|))
+import qualified Vary
+import Vary.VEither (VEither (VLeft, VRight))
+import qualified Vary.VEither as VEither
 
 type Env = M.Map Text VarInfo
 
 type TypeEnv = M.Map Text STType
 
-data SemantDiag
-  = DuplicateVar {dName :: Text, dPrev :: Span, dHere :: Span}
-  | UnknownVar {dName :: Text, dWhere :: Span}
-  | AssignToConst {dName :: Text, dWhere :: Span}
-  | TypeMismatch {dName :: Text, dWhere :: Span, expected :: STType, actual :: STType}
-  | MissingInitializer {dName :: Text, dWhere :: Span}
-  | OpTypeMismatch {op :: Text, expected :: STType, actual :: STType}
-  | UnknownType {tName :: Text, tWhere :: Span}
-  | TypeCycle {tName :: Text, tWhere :: Span}
-  | NotAStruct {sWhere :: Span, actual :: STType}
-  | UnknownField {fName :: Text, fWhere :: Span, baseType :: STType}
-  | NotAnArray {dWhere :: Span, actual :: STType}
-  | BadIndexCount {dWhere :: Span, expectedN :: Int, actualN :: Int}
-  | IndexNotInt {dWhere :: Span, actual :: STType}
-  | AssignToLoopVar {dName :: Text, dWhere :: Span}
-  | UnknownEnumValue {tName :: Text, eName :: Text, dWhere :: Span}
-  | NotAnEnum {tName :: Text, tWhere :: Span, actual :: STType}
-  | InvalidCaseRange {low :: Int, high :: Int}
-  | OverlappingCase
-  | NonConstantExpr {dWhere :: Span}
-  | OutOfRange {dName :: Text, dWhere :: Span, target :: STType, value :: Integer}
-  | TooManyAggElems {dName :: Text, dWhere :: Span, expectedElems :: Int, actualElems :: Int}
-  | IndexOutOfBounds {dName :: Text, dWhere :: Span, index :: Integer, lowb :: Integer, highb :: Integer}
-  deriving (Eq, Show)
+type ExpectedSTType = STType
+
+type ActualSTType = STType
+
+type BaseSTType = STType
+
+type VariableName = Text
+
+type FieldName = Text
+
+type EnumName = Text
+
+type TypeName = Text
+
+type MemberName = Text
+
+type RangeFrom = Int
+
+type RangeTo = Int
+
+type ExpectedElems = Int
+
+type ActualElems = Int
+
+data DuplicateVar = DuplicateVar VariableName Span deriving (Eq, Show)
+
+data UnknownVar = UnknownVar VariableName Span deriving (Eq, Show)
+
+data AssignToConst = AssignToConst VariableName Span deriving (Eq, Show)
+
+data TypeMismatch = TypeMismatch VariableName Span ExpectedSTType ActualSTType deriving (Eq, Show)
+
+newtype TypeMismatch' = TypeMismatch' ActualSTType deriving (Eq, Show)
+
+data MissingInitializer = MissingInitializer VariableName Span deriving (Eq, Show)
+
+data UnknownType = UnknownType TypeName Span deriving (Eq, Show)
+
+data TypeCycle = TypeCycle TypeName Span deriving (Eq, Show)
+
+data NotAStruct = NotAStruct Span ActualSTType deriving (Eq, Show)
+
+data UnknownStructMember = UnknownStructMember BaseSTType MemberName Span deriving (Eq, Show)
+
+data NotAnArray = NotAnArray Span ActualSTType deriving (Eq, Show)
+
+newtype BadIndexCount = BadIndexCount Span deriving (Eq, Show)
+
+data IndexNotInt = IndexNotInt Span ActualSTType deriving (Eq, Show)
+
+data AssignToLoopVar = AssignToLoopVar VariableName Span deriving (Eq, Show)
+
+data UnknownEnumMember = UnknownEnumMember EnumName MemberName Span deriving (Eq, Show)
+
+data NotAnEnum = NotAnEnum VariableName Span ActualSTType deriving (Eq, Show)
+
+data InvalidCaseRange = InvalidCaseRange RangeFrom RangeTo deriving (Eq, Show)
+
+data OverlappingCase = OverlappingCase deriving (Eq, Show)
+
+newtype NonConstantExpr = NonConstantExpr Span deriving (Eq, Show)
+
+data OutOfRange = OutOfRange VariableName STType Integer Span deriving (Eq, Show)
+
+data TooManyAggElems = TooManyAggElems VariableName Span ExpectedElems ActualElems deriving (Eq, Show)
+
+data IndexOutOfBounds = IndexOutOfBounds VariableName Span Integer RangeFrom RangeTo deriving (Eq, Show)
+
+data BadUseOfFunction = BadUseOfFunction deriving (Eq, Show)
+
+-- data SemantDiag
+--   = DuplicateVar {dName :: Text, dPrev :: Span, dHere :: Span}
+--   | UnknownVar {dName :: Text, dWhere :: Span}
+--   | AssignToConst {dName :: Text, dWhere :: Span}
+--   | TypeMismatch {dName :: Text, dWhere :: Span, expected :: STType, actual :: STType}
+--   | MissingInitializer {dName :: Text, dWhere :: Span}
+--   | OpTypeMismatch {op :: Text, expected :: STType, actual :: STType}
+--   | UnknownType {tName :: Text, tWhere :: Span}
+--   | TypeCycle {tName :: Text, tWhere :: Span}
+--   | NotAStruct {sWhere :: Span, actual :: STType}
+--   | UnknownField {fName :: Text, fWhere :: Span, baseType :: STType}
+--   | NotAnArray {dWhere :: Span, actual :: STType}
+--   | BadIndexCount {dWhere :: Span, expectedN :: Int, actualN :: Int}
+--   | IndexNotInt {dWhere :: Span, actual :: STType}
+--   | AssignToLoopVar {dName :: Text, dWhere :: Span}
+--   | UnknownEnumValue {tName :: Text, eName :: Text, dWhere :: Span}
+--   | NotAnEnum {tName :: Text, tWhere :: Span, actual :: STType}
+--   | InvalidCaseRange {low :: Int, high :: Int}
+--   | OverlappingCase
+--   | NonConstantExpr {dWhere :: Span}
+--   | OutOfRange {dName :: Text, dWhere :: Span, target :: STType, value :: Integer}
+--   | TooManyAggElems {dName :: Text, dWhere :: Span, expectedElems :: Int, actualElems :: Int}
+--   | IndexOutOfBounds {dName :: Text, dWhere :: Span, index :: Integer, lowb :: Integer, highb :: Integer}
+--   deriving (Eq, Show)
 
 toIdent :: Text -> Identifier
 toIdent txt =
@@ -101,6 +201,9 @@ spanOfExpr = \case
 
 -- lookupByName :: Text -> [(Identifier, STType)] -> Maybe STType
 -- lookupByName n = fmap snd . find (\(i, _) -> locVal i == n)
+
+typeEnvOf :: [TypeDecl] -> M.Map Text STType
+typeEnvOf = M.fromList . map (\(TypeDecl n t) -> (locVal n, t))
 
 -- =========================
 -- 整数/ビット列の範囲情報
@@ -176,9 +279,9 @@ lvalueRootName = \case
 -- 1 つのセレクタを閉区間に変換（値は [v,v]、範囲は [a,b]）
 -- intervalOf :: CaseSelector -> Either [SemantDiag] (Int, Int)
 -- intervalOf = \case
---   CSValue v -> Right (v, v)
+--   CSValue v -> VRight (v, v)
 --   CSRange a b
---     | a <= b -> Right (a, b)
+--     | a <= b -> VRight (a, b)
 --     | otherwise -> Left [InvalidCaseRange {low = a, high = b}]
 --   CSEnum ty _ -> Left [OpTypeMismatch {op = "CASE", expected = INT, actual = Named ty}]
 
@@ -190,7 +293,7 @@ lvalueRootName = \case
 --   let sorted = sortOn fst ivals
 --   if hasOverlap sorted
 --     then Left [OverlappingCase]
---     else Right ()
+--     else VRight ()
 --   where
 --     -- inclusive 区間の重なり検出（隣接 1..3 と 4..5 は OK、1..3 と 3..5 は重なり）
 --     hasOverlap :: [(Int, Int)] -> Bool
@@ -275,7 +378,7 @@ defaultInitWithTypes tenv = go
         let n = arrayCapacity rs
         pure (EArrayAgg (replicate n el0))
       -- 別名は解決して再帰
-      Named _ -> either (const Nothing) go (resolveType tenv ty)
+      Named _ -> VEither.veither (const Nothing) go (resolveType tenv ty)
       -- その他は未定義
       _ -> Nothing
 
@@ -295,23 +398,40 @@ assignCoerce tenv fromTy toTy =
 arrayCapacity :: [ArrRange] -> Int
 arrayCapacity = product . fmap (\(ArrRange lo hi) -> hi - lo + 1)
 
-inferType :: TypeEnv -> Env -> Expr -> Either [SemantDiag] STType
+inferType ::
+  ( TypeMismatch' :| e,
+    UnknownEnumMember :| e,
+    NotAnEnum :| e,
+    IndexOutOfBounds :| e,
+    NotAnArray :| e,
+    UnknownStructMember :| e,
+    NotAStruct :| e,
+    UnknownVar :| e,
+    IndexOutOfBounds :| e,
+    BadUseOfFunction :| e,
+    TypeCycle :| e,
+    UnknownType :| e
+  ) =>
+  TypeEnv ->
+  Env ->
+  Expr ->
+  VEither e STType
 inferType tenv env = \case
-  EINT _ -> Right INT
-  EBOOL _ -> Right BOOL
-  EREAL _ -> Right REAL
-  ELREAL _ -> Right LREAL
-  ESTRING _ -> Right $ STRING Nothing
-  EWSTRING _ -> Right $ WSTRING Nothing
-  ECHAR _ -> Right CHAR
-  EWCHAR _ -> Right WCHAR
+  EINT _ -> VRight INT
+  EBOOL _ -> VRight BOOL
+  EREAL _ -> VRight REAL
+  ELREAL _ -> VRight LREAL
+  ESTRING _ -> VRight $ STRING Nothing
+  EWSTRING _ -> VRight $ WSTRING Nothing
+  ECHAR _ -> VRight CHAR
+  EWCHAR _ -> VRight WCHAR
   ENeg expr -> do
     t <- inferType tenv env expr
     case t of
-      INT -> Right INT
-      REAL -> Right REAL
-      LREAL -> Right LREAL
-      _ -> Left [OpTypeMismatch {op = "NEG", expected = INT, actual = t}]
+      INT -> VRight INT
+      REAL -> VRight REAL
+      LREAL -> VRight LREAL
+      _ -> VEither.fromLeft $ TypeMismatch' t
   -- 数値二項演算（INT/REAL 混在は REAL に昇格）
   EAdd a b -> arith2 "+" a b
   ESub a b -> arith2 "-" a b
@@ -322,7 +442,7 @@ inferType tenv env = \case
     tb <- inferType tenv env b
     if ta == INT && tb == INT
       then pure INT
-      else Left [OpTypeMismatch {op = "MOD", expected = INT, actual = if ta /= INT then ta else tb}]
+      else VEither.fromLeft $ TypeMismatch' $ if ta /= INT then ta else tb
   -- 比較（数値同士は OK、混在も可）。結果は BOOL
   EEq a b -> comp2 "=" a b
   ENe a b -> comp2 "<>" a b
@@ -334,18 +454,18 @@ inferType tenv env = \case
     t0 <- inferType tenv env e
     let t = resolvePrim tenv t0
     case t of
-      BOOL -> Right BOOL
-      BYTE -> Right BYTE
-      WORD -> Right WORD
-      DWORD -> Right DWORD
-      LWORD -> Right LWORD
-      _ -> Left [OpTypeMismatch {op = "NOT", expected = BOOL, actual = t0}]
+      BOOL -> VRight BOOL
+      BYTE -> VRight BYTE
+      WORD -> VRight WORD
+      DWORD -> VRight DWORD
+      LWORD -> VRight LWORD
+      _ -> VEither.fromLeft $ TypeMismatch' t0
   EAnd a b -> bitwise2 "AND" a b
   EXor a b -> bitwise2 "XOR" a b
   EOr a b -> bitwise2 "OR" a b
   EVar x -> case M.lookup (locVal x) env of
-    Nothing -> Left [UnknownVar (locVal x) (locSpan x)]
-    Just info -> Right $ viType info
+    Nothing -> VEither.fromLeft $ UnknownVar (locVal x) (locSpan x)
+    Just info -> VRight $ viType info
   -- a.b の型判定：まず構造体フィールドを試し、それ以外は Enum 修飾の可能性を検討
   -- フィールド参照（構造体 or 列挙リテラル）
   EField e fld -> case e of
@@ -357,18 +477,19 @@ inferType tenv env = \case
         Nothing ->
           -- 変数ではなかったので“型名か？”を判定
           case resolveType tenv (Named vId) of
-            Right (Enum ctors) ->
+            VRight (Enum ctors) ->
               if any ((== locVal fld) . locVal . fst) ctors
-                then Right (Named vId) -- 列挙は Named を返す（A-4/a）
-                else Left [UnknownEnumValue {tName = locVal vId, eName = locVal fld, dWhere = locSpan vId}]
-            Right other -> Left [NotAnEnum {tName = locVal vId, tWhere = locSpan vId, actual = other}]
+                then VRight (Named vId) -- 列挙は Named を返す（A-4/a）
+                else VEither.fromLeft $ UnknownEnumMember (locVal vId) (locVal fld) (locSpan vId)
+            VRight other -> VEither.fromLeft $ NotAnEnum (locVal vId) (locSpan vId) other
             -- 型にも無い → ここは“値としても無い”ので UnknownVar にする
-            Left _ -> Left [UnknownVar (locVal vId) (locSpan vId)]
+            _ -> VEither.fromLeft $ UnknownVar (locVal vId) (locSpan vId)
     -- それ以外は通常の構造体アクセス解決
     _ -> goStruct fld e
   EIndex arr idxs -> do
     tBase <- inferType tenv env arr
     tRes <- resolveType tenv tBase
+
     case tRes of
       Array ranges elTy -> do
         -- 次元数チェックは必要ならここで
@@ -376,61 +497,62 @@ inferType tenv env = \case
           ti <- inferType tenv env ie
           -- 添字は整数系のみを許可（必要に応じて緩めてもOK）
           unless (ti == INT || isIntOrBits ti) $
-            Left [OpTypeMismatch {op = "[]", expected = INT, actual = ti}]
+            VEither.fromLeft $
+              TypeMismatch' ti
           -- 定数なら静的境界チェック
-          case constIntValue tenv env ie of
+          case constIntValue ie of
             Just n ->
               unless (fromIntegral lo <= n && n <= fromIntegral hi) $
-                Left
-                  [ IndexOutOfBounds
-                      { dName = lvalueRootName (LIndex (LVar (toIdent "<expr>")) [ie]),
-                        dWhere = spanOfExpr ie,
-                        index = n,
-                        lowb = fromIntegral lo,
-                        highb = fromIntegral hi
-                      }
-                  ]
+                VEither.fromLeft $
+                  IndexOutOfBounds
+                    ( lvalueRootName
+                        (LIndex (LVar (toIdent "<expr>")) [ie])
+                    )
+                    (spanOfExpr ie)
+                    n
+                    lo
+                    hi
             Nothing -> pure ()
 
         pure elTy
-      _ -> Left [NotAnArray {dWhere = spanOfExpr arr, actual = tRes}]
+      _ -> VEither.fromLeft $ NotAnArray (spanOfExpr arr) tRes
   EEnum ty ctor -> do
     -- TypeName を解決して列挙型かチェック
     tResolved <- resolveType tenv (Named ty)
     case tResolved of
       Enum ctors ->
         if any (\i -> locVal (fst i) == locVal ctor) ctors
-          then Right tResolved
+          then VRight tResolved
           else
-            Left [UnknownEnumValue {tName = locVal ty, eName = locVal ctor, dWhere = locSpan ctor}]
-      other -> Left [NotAnEnum {tName = locVal ty, tWhere = locSpan ty, actual = other}]
-  EArrayAgg _ -> Left []
-  EStructAgg _ -> Left []
+            VEither.fromLeft $ UnknownEnumMember (locVal ty) (locVal ctor) (locSpan ctor)
+      other -> VEither.fromLeft $ NotAnEnum (locVal ty) (locSpan ty) other
+  EArrayAgg _ -> VEither.fromLeft BadUseOfFunction
+  EStructAgg _ -> VEither.fromLeft BadUseOfFunction
   where
-    eqLike sym ta tb =
+    eqLike _ ta tb =
       if nominalEq tenv ta tb
-        then Right BOOL
-        else Left [OpTypeMismatch {op = sym, expected = ta, actual = tb}]
+        then VRight BOOL
+        else VEither.fromLeft $ TypeMismatch' tb
 
-    ordLike sym ta tb
+    ordLike _ ta tb
       -- 同型で数値なら OK
       | ta == tb,
         ta `elem` [INT, REAL, LREAL] =
-          Right BOOL
-      | both isChar ta tb = Right BOOL
-      | both isWChar ta tb = Right BOOL
-      | both isString ta tb = Right BOOL
-      | both isWString ta tb = Right BOOL
+          VRight BOOL
+      | both isChar ta tb = VRight BOOL
+      | both isWChar ta tb = VRight BOOL
+      | both isString ta tb = VRight BOOL
+      | both isWString ta tb = VRight BOOL
       -- INT と REAL の混在は OK
-      | (ta, tb) == (INT, REAL) || (ta, tb) == (REAL, INT) = Right BOOL
+      | (ta, tb) == (INT, REAL) || (ta, tb) == (REAL, INT) = VRight BOOL
       -- LREAL は同型のみ可：片側だけ LREAL は NG
       | ta == LREAL && tb /= LREAL =
-          Left [OpTypeMismatch {op = sym, expected = LREAL, actual = tb}]
+          VEither.fromLeft $ TypeMismatch' tb
       | tb == LREAL && ta /= LREAL =
-          Left [OpTypeMismatch {op = sym, expected = LREAL, actual = ta}]
+          VEither.fromLeft $ TypeMismatch' ta
       -- その他（BOOL 等を含む）は NG。算術と同様に「INT を期待」として怒る
       | otherwise =
-          Left [OpTypeMismatch {op = sym, expected = INT, actual = tb}]
+          VEither.fromLeft $ TypeMismatch' tb
       where
         isChar = \case CHAR -> True; _ -> False
         isWChar = \case WCHAR -> True; _ -> False
@@ -443,18 +565,18 @@ inferType tenv env = \case
       ta <- inferType tenv env a
       tb <- inferType tenv env b
       case (ta, tb) of
-        (INT, INT) -> Right INT
-        (REAL, REAL) -> Right REAL
-        (LREAL, LREAL) -> Right LREAL
-        (INT, REAL) -> Right REAL
-        (REAL, INT) -> Right REAL
+        (INT, INT) -> VRight INT
+        (REAL, REAL) -> VRight REAL
+        (LREAL, LREAL) -> VRight LREAL
+        (INT, REAL) -> VRight REAL
+        (REAL, INT) -> VRight REAL
         -- LREAL は“同型のみ”を許可（INT/LREAL や REAL/LREAL は NG）
-        (LREAL, x) | x /= LREAL -> Left [OpTypeMismatch {op = o, expected = LREAL, actual = x}]
-        (x, LREAL) | x /= LREAL -> Left [OpTypeMismatch {op = o, expected = LREAL, actual = x}]
+        (LREAL, x) | x /= LREAL -> VEither.fromLeft $ TypeMismatch' x
+        (x, LREAL) | x /= LREAL -> VEither.fromLeft $ TypeMismatch' x
         -- それ以外（BOOL 等）は「算術は INT を期待」で怒る（テスト準拠）
         _ ->
           let bad = (if (ta == BOOL) || (tb == BOOL) then BOOL else tb)
-           in Left [OpTypeMismatch {op = o, expected = INT, actual = bad}]
+           in VEither.fromLeft $ TypeMismatch' bad
     -- 比較: 数値同士は OK（混在可）→ BOOL
     comp2 o a b = do
       ta <- inferType tenv env a
@@ -467,17 +589,17 @@ inferType tenv env = \case
     goStruct fld base = do
       tr <- inferType tenv env base
       case resolveType tenv tr of
-        Right (Struct fs) ->
+        VRight (Struct fs) ->
           case lookup (locVal fld) [(locVal n, t) | (n, t) <- fs] of
-            Just t -> Right t
-            Nothing -> Left [UnknownField {fName = locVal fld, fWhere = locSpan fld, baseType = tr}]
+            Just t -> VRight t
+            Nothing -> VEither.fromLeft $ UnknownStructMember tr (locVal fld) (locSpan fld)
         -- 構造体以外に .field は不可
-        _ -> Left [NotAStruct {sWhere = locSpan fld, actual = tr}]
+        _ -> VEither.fromLeft $ NotAStruct (locSpan fld) tr
 
     resolvePrim :: TypeEnv -> STType -> STType
     resolvePrim tenv' t = case resolveType tenv' t of
-      Right u -> u
-      Left _ -> t
+      VRight u -> u
+      VLeft _ -> t
 
     isBitString :: STType -> Bool
     isBitString = \case
@@ -491,28 +613,26 @@ inferType tenv env = \case
     --   - BOOL 同士 → BOOL
     --   - 同幅 BITSTRING 同士 → その型
     --   - それ以外 → 型不一致
-    bitwise2 :: Text -> Expr -> Expr -> Either [SemantDiag] STType
-    bitwise2 op a b = do
+    bitwise2 op l r = do
       ta0 <- inferType tenv env a
       tb0 <- inferType tenv env b
       let ta = resolvePrim tenv ta0
           tb = resolvePrim tenv tb0
       case (ta, tb) of
-        (BOOL, BOOL) -> Right BOOL
-        _ | isBitString ta && ta == tb -> Right ta
-        _ -> Left [OpTypeMismatch {op = op, expected = ta0, actual = tb0}]
+        (BOOL, BOOL) -> VRight BOOL
+        _ | isBitString ta && ta == tb -> VRight ta
+        _ -> VEither.fromLeft $ TypeMismatch' tb0
 
-    constIntValue :: TypeEnv -> Env -> Expr -> Maybe Integer
-    constIntValue _tenv _env e =
+    constIntValue e =
       case numericLiteralValue e of
         Just n -> Just n
         Nothing -> case e of
           EVar i -> do
-            vi <- M.lookup (locVal i) _env
+            vi <- M.lookup (locVal i) env
             guard (viKind vi == VKConstant)
             initE <- viInit vi
             numericLiteralValue initE
-          ENeg e' -> negate <$> constIntValue _tenv _env e'
+          ENeg e' -> negate <$> constIntValue e'
           _ -> Nothing
 
 -- 左辺の“ベース変数”を取り出す（const/存在チェック用）
@@ -523,95 +643,105 @@ baseIdent = \case
   LIndex l _ -> baseIdent l
 
 -- 環境中の型から、LValue に沿って最終型を掘る
-lvalueType :: TypeEnv -> Env -> STType -> LValue -> Either [SemantDiag] STType
+lvalueType ::
+  ( UnknownVar :| e,
+    AssignToConst :| e,
+    UnknownStructMember :| e,
+    NotAStruct :| e,
+    BadIndexCount :| e,
+    TypeMismatch' :| e,
+    IndexOutOfBounds :| e,
+    BadUseOfFunction :| e
+  ) =>
+  TypeEnv ->
+  Env ->
+  STType ->
+  LValue ->
+  VEither e STType
 lvalueType tenv env ty = \case
   -- 変数：必ず環境に存在すること。無ければ UnknownVar
   LVar i ->
     case M.lookup (locVal i) env of
       Nothing ->
-        Left [UnknownVar {dName = locVal i, dWhere = locSpan i}]
+        VEither.fromLeft $ UnknownVar (locVal i) (locSpan i)
       Just info ->
         if viKind info == VKConstant
-          then Left [AssignToConst {dName = locVal i, dWhere = locSpan i}]
-          else Right $ viType info
+          then VEither.fromLeft $ AssignToConst (locVal i) (locSpan i)
+          else VRight $ viType info
   LField l fld -> do
     tr <- lvalueType tenv env ty l
     case tr of
       Struct fs ->
         case lookupByText fld fs of
-          Just t -> Right t
-          Nothing -> Left [UnknownField {fName = locVal fld, fWhere = locSpan fld, baseType = tr}]
-      _ -> Left [NotAStruct {sWhere = locSpan fld, actual = tr}]
+          Just t -> VRight t
+          Nothing -> VEither.fromLeft $ UnknownStructMember tr (locVal fld) (locSpan fld)
+      _ -> VEither.fromLeft $ NotAStruct (locSpan fld) tr
   LIndex base idxs@(idx : _) -> do
     tBase <- lvalueType tenv env INT base -- 第3引数は未使用なら何でもOK
     tRes <- resolveType tenv tBase
     case tRes of
       Array ranges elTy -> do
-        when (length idxs /= length ranges) $ do
-          Left
-            [ BadIndexCount
-                { dWhere = spanOfExpr idx,
-                  expectedN = length ranges,
-                  actualN = length idxs
-                }
-            ]
+        when (length idxs /= length ranges) $
+          VEither.fromLeft $
+            BadIndexCount (spanOfExpr idx)
         forM_ (zip idxs ranges) $ \(ie, ArrRange lo hi) -> do
           ti <- inferType tenv env ie
           unless (ti == INT || isIntOrBits ti) $
-            Left [OpTypeMismatch {op = "[]", expected = INT, actual = ti}]
+            VEither.fromLeft $
+              TypeMismatch' ti
           case numericLiteralValue ie of
             Just n ->
               unless (fromIntegral lo <= n && n <= fromIntegral hi) $
-                Left
-                  [ IndexOutOfBounds
-                      { dName = lvalueRootName (LIndex base idxs),
-                        dWhere = spanOfExpr ie,
-                        index = n,
-                        lowb = fromIntegral lo,
-                        highb = fromIntegral hi
-                      }
-                  ]
+                VEither.fromLeft $
+                  IndexOutOfBounds
+                    (lvalueRootName $ LIndex base idxs)
+                    (spanOfExpr ie)
+                    n
+                    lo
+                    hi
             Nothing -> pure ()
         pure elTy
-      _ -> Left [OpTypeMismatch {op = "[]", expected = Array [] INT, actual = tRes}]
-  LIndex _ _ -> Left []
+      _ -> VEither.fromLeft $ TypeMismatch' tRes
+  LIndex _ _ -> VEither.fromLeft BadUseOfFunction
 
 -- 1変数の意味解析：型チェック & 既定初期化付与
-elabVar :: TypeEnv -> Env -> Variable -> Either [SemantDiag] Variable
+elabVar ::
+  (MissingInitializer :| e) =>
+  TypeEnv -> Env -> Variable -> VEither e Variable
 elabVar tenv env v =
   case (varConst v, varInit v) of
-    (True, Nothing) -> Left [MissingInitializer (locVal (varName v)) (locSpan (varName v))]
+    (True, Nothing) -> VEither.fromLeft $ MissingInitializer (locVal (varName v)) (locSpan (varName v))
     (True, Just e) -> set =<< check e
     (False, Nothing) ->
       case defaultInitWithTypes tenv (varType v) of
         Just e0 -> set e0
-        Nothing -> Right v
+        Nothing -> VRight v
     (False, Just e) -> set =<< check e
   where
     check = checkExprAssignable tenv env (varType v) (varName v)
-    set e' = Right v {varInit = Just e'}
+    set e' = VRight v {varInit = Just e'}
 
 -- check e = do
 -- -- 左辺（宣言型）を一応解決しておく（Named 対応）
--- let tgtTy = fromRight (varType v) (resolveType tenv (varType v))
+-- let tgtTy = fromVRight (varType v) (resolveType tenv (varType v))
 -- case e of
 --   EArrayAgg es -> do
 --     eNorm <- checkArrayAggInit tenv env (varName v) tgtTy es
---     Right v {varInit = Just eNorm}
+--     VRight v {varInit = Just eNorm}
 --   EStructAgg fs -> do
 --     eNorm <- checkStructAggInit tenv env (varName v) tgtTy fs
---     Right v {varInit = Just eNorm}
+--     VRight v {varInit = Just eNorm}
 --   _ -> do
 --     -- 特例: 右辺が整数リテラル かつ 左辺が整数/ビット列 → 範囲チェック
 --     case (numericLiteralValue e, isIntOrBits tgtTy) of
 --       (Just n, True) ->
 --         if fitsIn tgtTy n
---           then Right v
+--           then VRight v
 --           else Left [OutOfRange (locVal (varName v)) (spanOfExpr e) tgtTy n]
 --       _ -> do
 --         ty <- inferType tenv env e
 --         if assignCoerce tenv ty (varType v)
---           then Right v
+--           then VRight v
 --           else Left [TypeMismatch (locVal (varName v)) (locSpan (varName v)) (varType v) ty]
 
 -- 右辺 e を「左辺型 tgt に代入可能か」を検査し、必要なら正規化して返す。
@@ -620,6 +750,12 @@ elabVar tenv env v =
 --   * それ以外は inferType して assignCoerce で許容判定
 -- 失敗時は文脈名 who（通常は LHS の識別子名）を使って診断を出す
 checkExprAssignable ::
+  ( OutOfRange :| e,
+    TypeMismatch :| e,
+    TooManyAggElems :| e,
+    UnknownStructMember :| e,
+    NotAStruct :| e
+  ) =>
   TypeEnv ->
   Env ->
   -- | tgt: 左辺の期待型（宣言型）
@@ -629,9 +765,11 @@ checkExprAssignable ::
   -- | e0: 右辺式
   Expr ->
   -- | 正規化済みの式（初期化子なら整形後の Expr）
-  Either [SemantDiag] Expr
+  VEither e Expr
 checkExprAssignable tenv env tgt who e0 = do
-  let tgt' = fromRight tgt (resolveType tenv tgt) -- Named 解決
+  let tgt' = case resolveType tenv tgt of
+        VRight t -> t
+        _ -> tgt -- Named 解決
   case e0 of
     -- 集成初期化子は「期待型ありき」なので、ここで確定させる
     EArrayAgg xs -> checkArrayAggInit tenv env who tgt' xs -- 既存：正規化済み Expr を返す想定
@@ -642,25 +780,31 @@ checkExprAssignable tenv env tgt who e0 = do
       case (numericLiteralValue e0, isIntOrBits tgt') of
         (Just n, True) ->
           if fitsIn tgt' n
-            then Right e0
-            else Left [OutOfRange (locVal who) (spanOfExpr e0) tgt' n]
+            then VRight e0
+            else VEither.fromLeft $ OutOfRange (locVal who) tgt' n (spanOfExpr e0)
         -- 上記以外は通常の型推論 → 代入互換判定
         _ -> do
           ty <- inferType tenv env e0
           if assignCoerce tenv ty tgt'
-            then Right e0
-            else Left [TypeMismatch (locVal who) (locSpan who) tgt' ty]
+            then VRight e0
+            else VEither.fromLeft $ TypeMismatch (locVal who) (locSpan who) tgt' ty
 
 -- =========================================
 --  集成初期化子（配列）
 -- =========================================
 checkArrayAggInit ::
+  ( TooManyAggElems :| e,
+    TypeMismatch :| e,
+    OutOfRange :| e,
+    UnknownStructMember :| e,
+    NotAStruct :| e
+  ) =>
   TypeEnv ->
   Env ->
   Identifier -> -- 変数名（診断用）
   STType -> -- 期待型（Named 可能）
   [Expr] -> -- 与えられた要素
-  Either [SemantDiag] Expr -- 正規化した EArrayAgg を返す
+  VEither e Expr -- 正規化した EArrayAgg を返す
 checkArrayAggInit tenv env vname tgtTy0 es = do
   tgtTy <- resolveType tenv tgtTy0
   case tgtTy of
@@ -670,14 +814,14 @@ checkArrayAggInit tenv env vname tgtTy0 es = do
       if length es > len
         then do
           let sp = spanFromTo (spanOfExpr (head es)) (spanOfExpr (last es))
-          Left [TooManyAggElems {dName = locVal vname, dWhere = sp, expectedElems = len, actualElems = length es}]
+          VEither.fromLeft $ TooManyAggElems (locVal vname) sp len (length es)
         else do
           -- 既存の単一要素割当ルールで各要素を検査
           mapM_ (checkExprAssignable tenv env elTy vname) es
           -- 足りない分は型の既定初期値で埋める（なければエラーにしたい場合はここで Left）
           let fillers = replicate (len - length es) (fromMaybe (fallbackZero elTy) (defaultInitWithTypes tenv elTy))
-          Right (EArrayAgg (es ++ fillers))
-    _ -> Left [TypeMismatch (locVal vname) (locSpan vname) (Array [] INT) tgtTy] -- 期待が配列でない
+          VRight (EArrayAgg (es ++ fillers))
+    _ -> VEither.fromLeft $ TypeMismatch (locVal vname) (locSpan vname) (Array [] INT) tgtTy -- 期待が配列でない
   where
     arrayLen :: [ArrRange] -> Int
     arrayLen = sum . map (\(ArrRange lo hi) -> hi - lo + 1)
@@ -693,12 +837,21 @@ checkArrayAggInit tenv env vname tgtTy0 es = do
 --  集成初期化子（構造体）
 -- =========================================
 checkStructAggInit ::
+  ( UnknownStructMember :| e,
+    NotAStruct :| e,
+    OutOfRange :| e,
+    TypeMismatch :| e,
+    TooManyAggElems :| e,
+    UnknownStructMember :| e,
+    NotAStruct :| e,
+    BadUseOfFunction :| e
+  ) =>
   TypeEnv ->
   Env ->
   Identifier ->
   STType ->
   [(Identifier, Expr)] -> -- (フィールド名 := 式)
-  Either [SemantDiag] Expr
+  VEither e Expr
 checkStructAggInit tenv env varId tgtTy pairs = do
   -- 1) ターゲット型を解決して構造体定義を得る
   resolved <- resolveType tenv tgtTy
@@ -712,13 +865,11 @@ checkStructAggInit tenv env varId tgtTy pairs = do
       normPairs <- forM pairs $ \(fld, e) ->
         case M.lookup (locVal fld) defMap of
           Nothing ->
-            Left
-              [ UnknownField
-                  { fName = locVal varId, -- 変数名 or 型名、あなたの診断定義に合わせて
-                    fWhere = locSpan fld,
-                    baseType = resolved
-                  }
-              ]
+            VEither.fromLeft $
+              UnknownStructMember
+                resolved
+                (locVal varId) -- 変数名 or 型名、あなたの診断定義に合わせて
+                (locSpan fld)
           Just (_defNm, fTy) -> do
             e' <- checkExprAssignable tenv env fTy fld e -- Expr を正規化して返す版
             pure (locVal fld, (fld, e'))
@@ -746,12 +897,12 @@ checkStructAggInit tenv env varId tgtTy pairs = do
           Nothing ->
             case defaultInitWithTypes tenv fTy of
               Just defE -> pure (nm, defE)
-              Nothing -> Left [] -- pure (nm, EDefault) -- 必要に応じてポリシーを
+              Nothing -> VEither.fromLeft BadUseOfFunction -- pure (nm, EDefault) -- 必要に応じてポリシーを
 
       -- 4) 正規化済みの集成初期化を返す（フィールドは定義順で並べる）
       pure (EStructAgg filled)
     other ->
-      Left [NotAStruct {sWhere = locSpan varId, actual = other}]
+      VEither.fromLeft $ NotAStruct (locSpan varId) other
 
 -- where
 --   dupKey :: [Text] -> Maybe Text
@@ -783,7 +934,7 @@ checkStructAggInit tenv env varId tgtTy pairs = do
 --             case defaultInitWithTypes tenv dfTy of
 --               Just de -> pure (dfName, de)
 --               Nothing -> pure (dfName, fallbackZero dfTy)
---       Right (EStructAgg norm)
+--       VRight (EStructAgg norm)
 --     _ -> Left [TypeMismatch (locVal vname) (locSpan vname) (Struct []) tgtTy]
 --   where
 --     findInitByText :: Text -> [(Identifier, Expr)] -> Maybe (Identifier, Expr)
@@ -804,14 +955,14 @@ checkStructAggInit tenv env varId tgtTy pairs = do
 --     (True, Nothing) -> Left [MissingInitializer (locVal (varName v)) (locSpan (varName v))]
 --     (True, Just e) -> do
 --       e' <- checkInit tenv env (varName v) (varType v) e
---       Right v {varInit = Just e'}
+--       VRight v {varInit = Just e'}
 --     (False, Nothing) ->
 --       case defaultInitWithTypes tenv (varType v) of
---         Just e0 -> Right v {varInit = Just e0}
---         Nothing -> Right v
+--         Just e0 -> VRight v {varInit = Just e0}
+--         Nothing -> VRight v
 --     (False, Just e) -> do
 --       e' <- checkInit tenv env (varName v) (varType v) e
---       Right v {varInit = Just e'}
+--       VRight v {varInit = Just e'}
 
 -- ★ 初期化子の検査＆必要なら補完して式を返す
 -- checkInit ::
@@ -822,7 +973,7 @@ checkStructAggInit tenv env varId tgtTy pairs = do
 --   Expr ->
 --   Either [SemantDiag] Expr
 -- checkInit tenv env vName ty e = do
---   ty' <- Right =<< resolveType tenv ty
+--   ty' <- VRight =<< resolveType tenv ty
 --   case (ty', e) of
 --     -- 構造体: 不足は既定値で補完、未知/重複はエラー、型は各フィールドで検査
 --     (Struct fs, EStructAgg kvs) -> do
@@ -841,14 +992,14 @@ checkStructAggInit tenv env varId tgtTy pairs = do
 --       let missing = [(f, fty) | (f, fty) <- fs, Set.notMember (locVal f) seen]
 --       filled <- forM missing $ \(f, fty) ->
 --         case defaultInitWithTypes tenv fty of
---           Just e0 -> Right (f, e0)
---           Nothing -> Right (f, EINT 0) -- 最低限のフォールバック（基本来ない想定）
+--           Just e0 -> VRight (f, e0)
+--           Nothing -> VRight (f, EINT 0) -- 最低限のフォールバック（基本来ない想定）
 --       pure $ EStructAgg (checkedGiven ++ filled)
 
 --     -- 構造体型なのに構造体集成でない
 --     (Struct _, other) -> do
 --       t <- inferType tenv env other
---       if nominalEq tenv ty' t then Right other else Left [TypeMismatch (locVal vName) (spanOfExpr other) ty' t]
+--       if nominalEq tenv ty' t then VRight other else Left [TypeMismatch (locVal vName) (spanOfExpr other) ty' t]
 
 --     -- 配列: 個数超過はエラー、個数不足は既定値で埋める。要素ごとに型検査
 --     (Array rs elTy, EArrayAgg es) -> do
@@ -875,12 +1026,12 @@ checkStructAggInit tenv env varId tgtTy pairs = do
 --     -- 配列型なのに配列集成でない
 --     (Array _ _, other) -> do
 --       t <- inferType tenv env other
---       if nominalEq tenv ty' t then Right other else Left [TypeMismatch (locVal vName) (spanOfExpr other) ty' t]
+--       if nominalEq tenv ty' t then VRight other else Left [TypeMismatch (locVal vName) (spanOfExpr other) ty' t]
 
 --     -- それ以外は従来どおり（暗黙変換を許す）
 --     (_, other) -> checkAssignable tenv env ty' other
 
--- 要素/式が目標型に代入可能か検査し、必要なら許容（暗黙変換OKのときは Right ()）
+-- 要素/式が目標型に代入可能か検査し、必要なら許容（暗黙変換OKのときは VRight ()）
 -- checkAssignable ::
 --   TypeEnv ->
 --   Env ->
@@ -890,13 +1041,24 @@ checkStructAggInit tenv env varId tgtTy pairs = do
 -- checkAssignable tenv env target expr = do
 --   actual <- inferType tenv env expr
 --   if assignCoerce tenv actual target
---     then Right expr
+--     then VRight expr
 --     else Left [OpTypeMismatch {op = ":=", expected = target, actual = actual}]
 
 -- 本体の文チェック
-checkStmt :: TypeEnv -> Env -> Statement -> Either [SemantDiag] ()
+checkStmt ::
+  ( OutOfRange :| e,
+    TypeMismatch :| e,
+    TypeMismatch' :| e,
+    InvalidCaseRange :| e,
+    AssignToLoopVar :| e,
+    OverlappingCase :| e
+  ) =>
+  TypeEnv ->
+  Env ->
+  Statement ->
+  VEither e ()
 checkStmt tenv env = \case
-  Skip -> Right ()
+  Skip -> VRight ()
   Assign lv e -> do
     tr <- inferType tenv env e
     tl <- lvalueType tenv env tr lv
@@ -904,24 +1066,24 @@ checkStmt tenv env = \case
     case (isIntOrBits tl, numericLiteralValue e) of
       (True, Just n) ->
         if fitsIn tl n
-          then Right ()
-          else Left [OutOfRange {dName = lvalueRootName lv, dWhere = spanOfExpr e, target = tl, value = n}]
+          then VRight ()
+          else VEither.fromLeft $ OutOfRange (lvalueRootName lv) tl n (spanOfExpr e)
       _ ->
         if assignCoerce tenv tr tl
-          then Right ()
-          else Left [TypeMismatch {dName = lvalueRootName lv, dWhere = spanOfExpr e, expected = tl, actual = tr}]
+          then VRight ()
+          else VEither.fromLeft $ TypeMismatch (lvalueRootName lv) (spanOfExpr e) tl tr
   If c0 th0 elsifs els -> do
     t0 <- inferType tenv env c0
     if t0 == BOOL
       then pure ()
-      else Left [OpTypeMismatch {op = "IF", expected = BOOL, actual = t0}]
+      else VEither.fromLeft $ TypeMismatch' t0
     mapM_ (checkStmt tenv env) th0
     -- 各 ELSIF
     forM_ elsifs $ \(ce, block) -> do
       te <- inferType tenv env ce
       if te == BOOL
         then pure ()
-        else Left [OpTypeMismatch {op = "ELSIF", expected = BOOL, actual = te}]
+        else VEither.fromLeft $ TypeMismatch' te
       mapM_ (checkStmt tenv env) block
     -- ELSE
     mapM_ (checkStmt tenv env) els
@@ -930,19 +1092,19 @@ checkStmt tenv env = \case
     t <- inferType tenv env cond
     if t == BOOL
       then mapM_ (checkStmt tenv env) body
-      else Left [OpTypeMismatch {op = "WHILE", expected = BOOL, actual = t}]
+      else VEither.fromLeft $ TypeMismatch' t
 
   -- REPEAT：UNTIL 条件は BOOL
   Repeat body cond -> do
     mapM_ (checkStmt tenv env) body
     t <- inferType tenv env cond
     if t == BOOL
-      then Right ()
-      else Left [OpTypeMismatch {op = "REPEAT-UNTIL", expected = BOOL, actual = t}]
+      then VRight ()
+      else VEither.fromLeft $ TypeMismatch' t
   -- CASE：セレクタは Constant_Expr / Subrange（定数式）で、型は scrutinee と一致（名目同一含む）
   Case scrut arms els -> do
     tScrut <- inferType tenv env scrut
-    unless (isCaseScrutineeType tenv tScrut) $ Left [OpTypeMismatch {op = "CASE", expected = INT, actual = tScrut}]
+    unless (isCaseScrutineeType tenv tScrut) $ VEither.fromLeft $ TypeMismatch' tScrut
     -- ここでは INT / ENUM（Named→Enum 解決）を主対象（必要なら REAL/LREAL 拡張可）
     -- 型チェックは nominalEq を使って “同名 ENUM 同士” を同一扱い。
     -- let checkSel = \case
@@ -950,7 +1112,7 @@ checkStmt tenv env = \case
     --         checkConstDesignator tenv env e
     --         tSel <- inferType tenv env e
     --         if nominalEq tenv tScrut tSel
-    --           then Right ()
+    --           then VRight ()
     --           else Left [OpTypeMismatch {op = "CASE", expected = tScrut, actual = tSel}]
     --       CSRangeE a b -> do
     --         checkConstDesignator tenv env a
@@ -958,15 +1120,14 @@ checkStmt tenv env = \case
     --         ta <- inferType tenv env a
     --         tb <- inferType tenv env b
     --         if nominalEq tenv tScrut ta && nominalEq tenv ta tb
-    --           then Right ()
+    --           then VRight ()
     --           else Left [OpTypeMismatch {op = "CASE", expected = tScrut, actual = tb}]
     -- セレクタ1個の基本チェック（定数式 + 型一致）
-    let checkSelBasic :: Expr -> Either [SemantDiag] ()
-        checkSelBasic e = do
+    let checkSelBasic e = do
           tSel <- inferType tenv env e
           if nominalEq tenv tScrut tSel
             then checkConstDesignator tenv env e
-            else Left [OpTypeMismatch {op = "CASE", expected = tScrut, actual = tSel}]
+            else VEither.fromLeft $ TypeMismatch' tSel
 
     -- アーム本体の文の検査
     let checkArmBody = mapM_ (checkStmt tenv env)
@@ -978,8 +1139,8 @@ checkStmt tenv env = \case
         CSRangeE a b -> do
           -- ENUM のとき range は不許可（型ミスマッチ扱いで弾く）
           case isEnumNamed tenv tScrut of
-            Just tyId ->
-              Left [OpTypeMismatch {op = "CASE", expected = Named tyId, actual = INT}]
+            Just _ ->
+              VEither.fromLeft $ TypeMismatch' INT
             Nothing -> do
               -- INT（など）なら各端点の基本検査（型一致 & const）
               checkSelBasic a
@@ -989,25 +1150,25 @@ checkStmt tenv env = \case
     -- ★ INT スクルーティニのときだけ、向き&重複/交差チェック（リテラル評価できるもののみ）
     case tScrut of
       INT -> do
-        let selIntervals :: CaseSelector -> Either [SemantDiag] (Maybe (Int, Int))
+        let selIntervals :: CaseSelector -> Either [e] (Maybe (Int, Int))
             selIntervals = \case
               CSExpr e ->
                 case evalIntLiteral e of
-                  Just n -> Right (Just (n, n))
-                  Nothing -> Right Nothing -- 値が取れないものは判定スキップ
+                  Just n -> VRight (Just (n, n))
+                  Nothing -> VRight Nothing -- 値が取れないものは判定スキップ
               CSRangeE a b ->
                 case (evalIntLiteral a, evalIntLiteral b) of
                   (Just x, Just y)
-                    | x <= y -> Right (Just (x, y))
-                    | otherwise -> Left [InvalidCaseRange {low = x, high = y}]
-                  _ -> Right Nothing
+                    | x <= y -> VRight (Just (x, y))
+                    | otherwise -> VEither.fromLeft $ InvalidCaseRange x y
+                  _ -> VRight Nothing
 
         -- 各アーム内の重複・交差
         forM_ arms $ \(CaseArm sels _) -> do
           ivs <- catMaybes <$> traverse selIntervals sels
           let sorted = sortOn fst ivs
           when (hasOverlap sorted) $
-            Left [OverlappingCase]
+            VEither.fromLeft OverlappingCase
 
         -- アーム間の重複・交差
         let allSels = concatMap (\(CaseArm ss _) -> ss) arms
@@ -1037,7 +1198,7 @@ checkStmt tenv env = \case
   --       -- 列挙子は、型名が一致する場合のみ OK
   --       CSEnum ty _ ->
   --         if locVal ty == locVal expectedTy
-  --           then Right ()
+  --           then VRight ()
   --           else
   --             Left [OpTypeMismatch {op = "CASE", expected = t, actual = actualEnum ty}]
   For iv e0 e1 mby body -> do
@@ -1053,14 +1214,14 @@ checkStmt tenv env = \case
 
     -- init / end / step は INT
     t0 <- inferType tenv env e0
-    if t0 == INT then pure () else Left [OpTypeMismatch {op = "FOR-init", expected = INT, actual = t0}]
+    if t0 == INT then pure () else Left [TypeMismatch' t0]
     t1 <- inferType tenv env e1
-    if t1 == INT then pure () else Left [OpTypeMismatch {op = "FOR-end", expected = INT, actual = t1}]
+    if t1 == INT then pure () else Left [TypeMismatch' t1]
     case mby of
       Nothing -> pure ()
       Just s -> do
         ts <- inferType tenv env s
-        if ts == INT then pure () else Left [OpTypeMismatch {op = "FOR-by", expected = INT, actual = ts}]
+        if ts == INT then pure () else Left [TypeMismatch' ts]
 
     -- 本体でループ変数への代入を禁止
     mapM_ (denyAssignTo nameTxt) body
@@ -1074,7 +1235,7 @@ checkStmt tenv env = \case
         let b = baseIdent lhs
          in if locVal b == nm
               then Left [AssignToLoopVar nm (locSpan b)]
-              else Right ()
+              else VRight ()
       If _ th elsifs els ->
         mapM_ (denyAssignTo nm) th
           >> mapM_ (\(_, ss) -> mapM_ (denyAssignTo nm) ss) elsifs
@@ -1087,7 +1248,7 @@ checkStmt tenv env = \case
       For _ _ _ _ ss ->
         -- 同じ名前でも“別のループ”という概念は仕様上ないので禁止継続でOK
         mapM_ (denyAssignTo nm) ss
-      Skip -> Right ()
+      Skip -> VRight ()
 
 -- where
 -- もし範囲チェックをしたければ:
@@ -1095,7 +1256,7 @@ checkStmt tenv env = \case
 --   forM_ sels $ \case
 --     CSRange a b | a > b ->
 --       Left [InvalidCaseRange a b]   -- Diag を足す
---     _ -> Right ()
+--     _ -> VRight ()
 
 -- =========================================================
 --  Constant *Designator* checker (CODESYS 風, CASE セレクタ用)
@@ -1104,10 +1265,12 @@ checkStmt tenv env = \case
 --          定数ベースのフィールド参照
 --    * NG: すべての二項演算/比較/NOT、添字がリテラル以外等
 -- =========================================================
-checkConstDesignator :: TypeEnv -> Env -> Expr -> Either [SemantDiag] ()
+checkConstDesignator ::
+  (NonConstantExpr :| e) =>
+  TypeEnv -> Env -> Expr -> VEither e ()
 checkConstDesignator tenv env = go
   where
-    ok = Right ()
+    ok = VRight ()
 
     go = \case
       -- リテラル群は OK
@@ -1122,7 +1285,7 @@ checkConstDesignator tenv env = go
         | isConstVar env i -> ok
       -- VAR CONSTANT な配列要素（添字は整数リテラルのみ許可）
       EIndex base idxs
-        | Right () <- go base,
+        | VRight () <- go base,
           all isIntLikeLiteral idxs ->
             ok
       -- 定数構造体のフィールド: ベースが OK なら OK
@@ -1130,7 +1293,7 @@ checkConstDesignator tenv env = go
         go base
       -- それ以外は NG
       other ->
-        Left [NonConstantExpr (spanOfExpr other)]
+        VEither.fromLeft $ NonConstantExpr (spanOfExpr other)
 
     -- ヘルパ
     isConstVar m i =
@@ -1140,48 +1303,11 @@ checkConstDesignator tenv env = go
 
     isEnumType te tyId =
       case resolveType te (Named tyId) of
-        Right Enum {} -> True
+        VRight Enum {} -> True
         _ -> False
 
-elaborateProgram :: Program -> Either [SemantDiag] Program
-elaborateProgram = elaborateProgramWithTypes M.empty
-
--- TypeEnv あり版
-elaborateProgramWithTypes :: TypeEnv -> Program -> Either [SemantDiag] Program
-elaborateProgramWithTypes tenv (Program name (VarDecls vs) body) = do
-  -- 変数環境: 型は解決済みにして保持
-  env <- foldl insertVar (Right M.empty) vs
-  -- 既定初期値の付与・初期化式の型チェック
-  vs' <- traverse (elabVar tenv env) vs
-  -- 本体の文
-  mapM_ (checkStmt tenv env) body
-  pure (Program name (VarDecls vs') body)
-  where
-    insertVar acc v = do
-      m <- acc
-      let n = locVal (varName v)
-          sp = locSpan (varName v)
-      case M.lookup n m of
-        Just prev -> Left [DuplicateVar n (viSpan prev) sp]
-        Nothing -> do
-          -- ここでは resolveVarTypes 済みの varType を尊重：
-          --   列挙なら Named のまま、その他は解決後が入っている
-          Right
-            ( M.insert
-                n
-                VarInfo
-                  { viType = varType v,
-                    viSpan = locSpan (varName v),
-                    viKind = if varConst v then VKConstant else VKLocal,
-                    viInit = varInit v
-                  }
-                m
-            )
-
-typeEnvOf :: [TypeDecl] -> M.Map Text STType
-typeEnvOf = M.fromList . map (\(TypeDecl n t) -> (locVal n, t))
-
-resolveType :: TypeEnv -> STType -> Either [SemantDiag] STType
+resolveType ::
+  TypeEnv -> STType -> VEither [TypeCycle, UnknownType] STType
 resolveType tenv = go Set.empty
   where
     go seen = \case
@@ -1190,18 +1316,18 @@ resolveType tenv = go Set.empty
         let nameTxt = locVal n
             whereSp = locSpan n
          in if nameTxt `Set.member` seen
-              then Left [TypeCycle {tName = nameTxt, tWhere = whereSp}]
+              then VEither.fromLeft $ TypeCycle nameTxt whereSp
               else case M.lookup nameTxt tenv of
-                Nothing -> Left [UnknownType {tName = nameTxt, tWhere = whereSp}]
+                Nothing -> VEither.fromLeft $ UnknownType nameTxt whereSp
                 Just t -> go (Set.insert nameTxt seen) t
       -- ★ 構造体の中も再帰的に解決
       Struct fs -> Struct <$> traverse (\(fld, t) -> (fld,) <$> go seen t) fs
       Array rs el -> Array rs <$> go seen el
       -- ★ 既知の基底型はそのまま
-      t -> Right t
+      t -> VRight t
 
 -- 変数宣言の型を TypeEnv で解決して書き戻す
-resolveVarTypes :: TypeEnv -> VarDecls -> Either [SemantDiag] VarDecls
+resolveVarTypes :: TypeEnv -> VarDecls -> VEither [TypeCycle, UnknownType] VarDecls
 resolveVarTypes tenv (VarDecls vs) = do
   vs' <- traverse step vs
   pure (VarDecls vs')
@@ -1224,7 +1350,121 @@ resolveVarTypes tenv (VarDecls vs) = do
               }
         _ -> pure v {varType = maybe tyResolved Named keepNamedEnum}
 
-elaborateUnit :: Unit -> Either [SemantDiag] Unit
+elaborateProgram ::
+  Program ->
+  VEither
+    [ DuplicateVar,
+      UnknownVar,
+      AssignToConst,
+      TypeMismatch,
+      TypeMismatch',
+      MissingInitializer,
+      UnknownType,
+      TypeCycle,
+      NotAStruct,
+      UnknownStructMember,
+      NotAnArray,
+      BadIndexCount,
+      IndexNotInt,
+      AssignToLoopVar,
+      UnknownEnumMember,
+      NotAnEnum,
+      InvalidCaseRange,
+      OverlappingCase,
+      NonConstantExpr,
+      OutOfRange,
+      TooManyAggElems,
+      IndexOutOfBounds
+    ]
+    Program
+elaborateProgram = elaborateProgramWithTypes M.empty
+
+-- TypeEnv あり版
+elaborateProgramWithTypes ::
+  TypeEnv ->
+  Program ->
+  VEither
+    [ DuplicateVar,
+      UnknownVar,
+      AssignToConst,
+      TypeMismatch,
+      TypeMismatch',
+      MissingInitializer,
+      UnknownType,
+      TypeCycle,
+      NotAStruct,
+      UnknownStructMember,
+      NotAnArray,
+      BadIndexCount,
+      IndexNotInt,
+      AssignToLoopVar,
+      UnknownEnumMember,
+      NotAnEnum,
+      InvalidCaseRange,
+      OverlappingCase,
+      NonConstantExpr,
+      OutOfRange,
+      TooManyAggElems,
+      IndexOutOfBounds
+    ]
+    Program
+elaborateProgramWithTypes tenv (Program name (VarDecls vs) body) = do
+  -- 変数環境: 型は解決済みにして保持
+  env <- foldl insertVar (VRight M.empty) vs
+  -- 既定初期値の付与・初期化式の型チェック
+  vs' <- traverse (elabVar tenv env) vs
+  -- 本体の文
+  mapM_ (checkStmt tenv env) body
+  pure (Program name (VarDecls vs') body)
+  where
+    insertVar acc v = do
+      m <- acc
+      let n = locVal (varName v)
+          sp = locSpan (varName v)
+      case M.lookup n m of
+        Just _ -> VEither.fromLeft $ DuplicateVar n sp
+        Nothing -> do
+          -- ここでは resolveVarTypes 済みの varType を尊重：
+          --   列挙なら Named のまま、その他は解決後が入っている
+          VRight
+            ( M.insert
+                n
+                VarInfo
+                  { viType = varType v,
+                    viSpan = locSpan (varName v),
+                    viKind = if varConst v then VKConstant else VKLocal,
+                    viInit = varInit v
+                  }
+                m
+            )
+
+elaborateUnit ::
+  Unit ->
+  VEither
+    [ DuplicateVar,
+      UnknownVar,
+      AssignToConst,
+      TypeMismatch,
+      TypeMismatch',
+      MissingInitializer,
+      UnknownType,
+      TypeCycle,
+      NotAStruct,
+      UnknownStructMember,
+      NotAnArray,
+      BadIndexCount,
+      IndexNotInt,
+      AssignToLoopVar,
+      UnknownEnumMember,
+      NotAnEnum,
+      InvalidCaseRange,
+      OverlappingCase,
+      NonConstantExpr,
+      OutOfRange,
+      TooManyAggElems,
+      IndexOutOfBounds
+    ]
+    Unit
 elaborateUnit (Unit tys progs) = do
   -- 1) TYPE ブロックの本体を解決（別名をたどる・循環検出など）
   let tenv0 = typeEnvOf tys
@@ -1250,17 +1490,17 @@ nominalEq tenv a b =
     -- Named × Named：Enum は“名前で”、それ以外は展開して構造一致
     (Named n1, Named n2) ->
       case (resolveType tenv (Named n1), resolveType tenv (Named n2)) of
-        (Right Enum {}, Right Enum {}) -> locVal n1 == locVal n2
-        (Right t1, Right t2) -> t1 == t2
+        (VRight Enum {}, VRight Enum {}) -> locVal n1 == locVal n2
+        (VRight t1, VRight t2) -> t1 == t2
         _ -> False
     -- 片側だけ Named：その Named 側を解決してから再比較
     (Named n, t) ->
       case resolveType tenv (Named n) of
-        Right t' -> nominalEq tenv t' t
+        VRight t' -> nominalEq tenv t' t
         _ -> False
     (t, Named n) ->
       case resolveType tenv (Named n) of
-        Right t' -> nominalEq tenv t t'
+        VRight t' -> nominalEq tenv t t'
         _ -> False
     -- 文字列は“型種別一致”だけここで見る（長さは別で）
     (STRING _, STRING _) -> True
@@ -1268,7 +1508,7 @@ nominalEq tenv a b =
     -- それ以外：展開できるなら展開して構造一致。失敗したら素の比較。
     _ ->
       case (resolveType tenv a, resolveType tenv b) of
-        (Right r1, Right r2) -> r1 == r2
+        (VRight r1, VRight r2) -> r1 == r2
         _ -> a == b
 
 -- elabProgIn :: TypeEnv -> Program -> Either [SemantDiag] Program
@@ -1283,7 +1523,7 @@ nominalEq tenv a b =
 --   vsResolved <- traverse resolveVarType vs
 
 --   -- 2) 解決済みの型で env を構築（重複チェック）
---   env <- foldl step (Right M.empty) vsResolved
+--   env <- foldl step (VRight M.empty) vsResolved
 
 --   -- 3) 初期化（既定値付与＋初期化式の型検査）
 --   vs' <- traverse (elabVar env) vsResolved
@@ -1302,4 +1542,4 @@ nominalEq tenv a b =
 --           sp = locSpan (varName v)
 --       case M.lookup n m of
 --         Just (_, _, prev) -> Left [DuplicateVar n prev sp]
---         Nothing -> Right (M.insert n (varType v, varConst v, sp) m)
+--         Nothing -> VRight (M.insert n (varType v, varConst v, sp) m)

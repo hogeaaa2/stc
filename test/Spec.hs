@@ -155,7 +155,10 @@ stripStmt =
 -- 位置無視で「式」を比較
 shouldParseExprToNoLoc ::
   (Show e) =>
-  (Text -> Either e Expr) -> Text -> Expr -> Expectation
+  (Text -> Either e Expr) ->
+  Text ->
+  Expr ->
+  Expectation
 shouldParseExprToNoLoc run src want =
   case run src of
     Left e -> expectationFailure (show e)
@@ -164,7 +167,10 @@ shouldParseExprToNoLoc run src want =
 -- 位置無視で「文」を比較（LHS が Identifier の現在仕様用）
 shouldParseStmtToNoLoc ::
   (Show e) =>
-  (Text -> Either e Statement) -> Text -> Statement -> Expectation
+  (Text -> Either e Statement) ->
+  Text ->
+  Statement ->
+  Expectation
 shouldParseStmtToNoLoc run src want =
   case run src of
     Left e -> expectationFailure (show e)
