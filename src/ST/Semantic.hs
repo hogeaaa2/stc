@@ -1,12 +1,9 @@
+{-# LANGUAGE GHC2021 #-}
 {-# LANGUAGE DataKinds #-}
-{-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TupleSections #-}
-{-# LANGUAGE TypeApplications #-}
-{-# LANGUAGE TypeOperators #-}
-{-# OPTIONS_GHC -Wno-partial-fields #-}
 
 module ST.Semantic
   ( elaborateProgram,
@@ -33,22 +30,23 @@ module ST.Semantic
     OutOfRange (..),
     TooManyAggElems (..),
     IndexOutOfBounds (..),
+    BadUseOfFunction (..),
     nominalEq,
   )
 where
 
 import Control.Monad (forM, forM_, guard, unless, when)
 import Data.List (sortOn)
-import qualified Data.Map.Strict as M
+import Data.Map.Strict qualified as M
 import Data.Maybe (catMaybes, fromMaybe)
-import qualified Data.Set as Set
+import Data.Set qualified as Set
 import Data.Text (Text)
-import qualified Data.Text as T
+import Data.Text qualified as T
 import ST.AST
 import Text.Megaparsec.Pos
 import Vary ((:|))
 import Vary.VEither (VEither (VLeft, VRight))
-import qualified Vary.VEither as VEither
+import Vary.VEither qualified as VEither
 
 type Env = M.Map Text VarInfo
 
@@ -851,7 +849,7 @@ checkArrayAggInit tenv env vname tgtTy0 es = do
   tgtTy <- resolveType tenv tgtTy0
   case tgtTy of
     Array ranges elTy -> do
-      let len = arrayLen ranges
+      let len = arrayCapacity ranges
 
       if length es > len
         then do
@@ -863,11 +861,8 @@ checkArrayAggInit tenv env vname tgtTy0 es = do
           -- 足りない分は型の既定初期値で埋める（なければエラーにしたい場合はここで Left）
           let fillers = replicate (len - length es) (fromMaybe (fallbackZero elTy) (defaultInitWithTypes tenv elTy))
           VRight (EArrayAgg (es ++ fillers))
-    _ -> VEither.fromLeft $ TypeMismatch (locVal vname) (locSpan vname) (Array [] INT) tgtTy -- 期待が配列でない
+    _ -> VEither.fromLeft $ NotAnArray (locSpan vname) tgtTy -- 期待が配列でない
   where
-    arrayLen :: [ArrRange] -> Int
-    arrayLen = sum . map (\(ArrRange lo hi) -> hi - lo + 1)
-
     -- 最低限のフォールバック（defaultInitWithTypes が Nothing の型に遭遇した場合の保険）
     fallbackZero :: STType -> Expr
     fallbackZero t
@@ -916,7 +911,7 @@ checkStructAggInit tenv env varId tgtTy pairs = do
             VEither.fromLeft $
               UnknownStructMember
                 resolved
-                (locVal varId) -- 変数名 or 型名、あなたの診断定義に合わせて
+                (locVal fld) -- 変数名 or 型名、あなたの診断定義に合わせて
                 (locSpan fld)
           Just (_defNm, fTy) -> do
             e' <- checkExprAssignable tenv env fTy fld e -- Expr を正規化して返す版
