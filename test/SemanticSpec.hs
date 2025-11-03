@@ -21,28 +21,28 @@ import Vary (Vary, into, (:|))
 import Vary.VEither (VEither (VLeft, VRight))
 
 type AllErrs =
-  '[ DuplicateVar,
+  '[ AssignToConst,
+     AssignToLoopVar,
+     BadIndexCount,
+     BadUseOfFunction,
+     DuplicateVar,
+     IndexOutOfBounds,
+     InvalidCaseRange,
+     MissingInitializer,
+     NonConstantExpr,
+     NotAnArray,
+     NotAnEnum,
+     NotAStruct,
+     OutOfRange,
+     OverlappingCase,
+     TooManyAggElems,
+     TypeCycle,
      TypeMismatch,
      TypeMismatch',
-     MissingInitializer,
-     AssignToLoopVar,
-     InvalidCaseRange,
-     OverlappingCase,
-     OutOfRange,
-     UnknownStructMember,
-     NotAStruct,
-     TooManyAggElems,
-     BadUseOfFunction,
-     TypeCycle,
-     UnknownType,
      UnknownEnumMember,
-     NotAnEnum,
-     IndexOutOfBounds,
-     NotAnArray,
-     UnknownVar,
-     AssignToConst,
-     BadIndexCount,
-     NonConstantExpr
+     UnknownStructMember,
+     UnknownType,
+     UnknownVar
    ]
 
 expectParsed :: Text -> (Program -> Expectation) -> Expectation
@@ -50,58 +50,11 @@ expectParsed src k = case parseProgram src of
   Left e -> expectationFailure (show e)
   Right p -> k p
 
--- shouldParse :: Text -> Expectation
--- shouldParse src = expectParsed src $ \prog ->
---   elaborateProgram prog `shouldSatisfy` isRight
-
 expectParsedUnit :: Text -> (Unit -> Expectation) -> Expectation
 expectParsedUnit src k =
   case parseUnit src of
     Left e -> expectationFailure (show e)
     Right u -> k u
-
--- shouldParseUnit :: Text -> Expectation
--- shouldParseUnit src = expectParsedUnit src $ \u ->
---   elaborateUnit u `shouldSatisfy` isRight
-
--- -- 便利: elaborate の結果が Left で、かつ単一診断が述語に一致することを確かめる
--- shouldFailWith1 :: Either [SemantDiag] a -> (SemantDiag -> Bool) -> Expectation
--- shouldFailWith1 r p = case r of
---   Left [d] | p d -> pure ()
---   Left ds -> expectationFailure ("unexpected diagnostics: " <> show ds)
---   Right _ -> expectationFailure "expected Left, got Right"
-
--- isRight :: Either a b -> Bool
--- isRight (Right _) = True
--- isRight (Left _) = False
-
--- arrayLenMismatch :: SemantDiag -> Bool
--- arrayLenMismatch TooManyAggElems {} = True
--- arrayLenMismatch _ = False
-
--- unknownFieldInit :: SemantDiag -> Bool
--- unknownFieldInit UnknownField {} = True
--- unknownFieldInit _ = False
-
--- indexOOB :: SemantDiag -> Bool
--- indexOOB IndexOutOfBounds {} = True
--- indexOOB _ = False
-
--- opTypeMismatch :: Text -> SemantDiag -> Bool
--- opTypeMismatch want (OpTypeMismatch {op = o}) = o == want
--- opTypeMismatch _ _ = False
-
--- typeMismatch :: Text -> SemantDiag -> Bool
--- typeMismatch want (TypeMismatch {dName = o}) = o == want
--- typeMismatch _ _ = False
-
--- isOverlappingCase :: SemantDiag -> Bool
--- isOverlappingCase OverlappingCase = True
--- isOverlappingCase _ = False
-
--- outOfRange :: Text -> SemantDiag -> Bool
--- outOfRange want (OutOfRange {dName = o}) = o == want
--- outOfRange _ _ = False
 
 -- | open-sum の Left から、指定エラー型だけを引き抜く（あるなら Just）
 --   ※ Vary のプロジェクタ名が環境で違う場合はここを書き換えるだけでOK
@@ -145,46 +98,6 @@ shouldFail ::
   (err :| es, Typeable err, Show (Vary es)) =>
   VEither es a -> Expectation
 shouldFail v = shouldFailWithDetail @err v (const True)
-
--- ==== Program 版 ヘルパ====
-
--- 期待：parseProgram → elaborateProgram が Right
-expectProgPass :: Text -> Expectation
-expectProgPass src =
-  case parseProgram src of
-    Left e -> expectationFailure (show e)
-    Right p ->
-      let v :: VEither AllErrs Program
-          v = elaborateProgram p
-       in shouldSucceedV v
-
--- 期待：Left（エラー“型”だけ一致していればOK）
-expectProgFail ::
-  forall err.
-  (err :| AllErrs, Typeable err) =>
-  Text -> Expectation
-expectProgFail src =
-  case parseProgram src of
-    Left e -> expectationFailure (show e)
-    Right p ->
-      let v :: VEither AllErrs Program
-          v = elaborateProgram p
-       in shouldFail @err v
-
--- 期待：Left（エラー型に加えて“中身”も判定）
-expectProgFailWithDetail ::
-  forall err.
-  (err :| AllErrs, Typeable err) =>
-  Text -> (err -> Bool) -> Expectation
-expectProgFailWithDetail src pred' =
-  case parseProgram src of
-    Left e -> expectationFailure (show e)
-    Right p ->
-      let v :: VEither AllErrs Program
-          v = elaborateProgram p
-       in shouldFailWithDetail @err v pred'
-
--- ==== Unit 版 ヘルパ ====
 
 expectUnitPass :: Text -> Expectation
 expectUnitPass src =
@@ -253,20 +166,20 @@ main = hspec $ do
   describe "assignment semantics" $ do
     it "accepts type-correct assignments" $ do
       let src = "PROGRAM P\nVAR\nx:INT; y:BOOL;\nEND_VAR\nx := 0;\ny := FALSE;\n"
-      expectProgPass src
+      expectUnitPass src
 
     it "parses two assignments after defaultInit" $ do
       let src = "PROGRAM P\nVAR\nx:INT; y:BOOL;\nEND_VAR\nx := 1;\ny := TRUE;\n"
-      expectProgPass src
+      expectUnitPass src
 
     it "rejects unknown variable" $ do
       let src = "PROGRAM P\nVAR\nx:INT;\nEND_VAR\nz := 1;\n"
-      expectProgFailWithDetail @UnknownVar src $
+      expectUnitFailWithDetail @UnknownVar src $
         \(UnknownVar vname _) -> vname == "z"
 
     it "rejects type mismatch" $ do
       let src = "PROGRAM P\nVAR\nx:INT;\nEND_VAR\nx := TRUE;\n"
-      expectProgFailWithDetail @TypeMismatch src $
+      expectUnitFailWithDetail @TypeMismatch src $
         \(TypeMismatch vname _ _ _) -> vname == "x"
 
   describe "assignment semantics (arithmetic operations)" $ do
@@ -295,12 +208,12 @@ main = hspec $ do
     -- OK 群
     forM_ ok $ \s ->
       it ("accepts " <> T.unpack s) $
-        expectProgPass (src <> s)
+        expectUnitPass (src <> s)
 
     -- NG 群（型も中身もチェック）
     forM_ ng $ \(tc, p) ->
       it ("rejects " <> T.unpack tc) $
-        expectProgFailWithDetail @TypeMismatch' (src <> tc) p
+        expectUnitFailWithDetail @TypeMismatch' (src <> tc) p
 
   describe "NOT semantics" $ do
     let base = "PROGRAM P\nVAR\nx:INT; y:BOOL;\nEND_VAR\n"
@@ -312,78 +225,52 @@ main = hspec $ do
     --   shouldParse (base <> "x := NOT 2;\n")
 
     it "rejects assigning NOT 2 (INT) to BOOL" $ do
-      expectProgFailWithDetail @TypeMismatch' (base <> "y := NOT 2;\n") $
+      expectUnitFailWithDetail @TypeMismatch' (base <> "y := NOT 2;\n") $
         \(TypeMismatch' actual) -> actual == INT
 
     it "rejects assigning NOT TRUE (BOOL) to INT" $ do
-      expectProgFailWithDetail @TypeMismatch (base <> "x := NOT TRUE;\n") $
+      expectUnitFailWithDetail @TypeMismatch (base <> "x := NOT TRUE;\n") $
         \(TypeMismatch vname _ expected actual) -> vname == "x" && expected == INT && actual == BOOL
 
   describe "IF semantics" $ do
     it "accepts when type of conditions are BOOL" $ do
       let src = "PROGRAM P\nVAR\nx:INT;\nEND_VAR\nIF x=0 THEN x := 1; ELSIF x=1 THEN x := 2; ELSE x := 3; END_IF\n"
-      expectProgPass src
+      expectUnitPass src
 
     it "rejects when condition of IF is not BOOL (1)" $ do
       let src = "PROGRAM P\nVAR\nx:INT;\nEND_VAR\nIF 1 THEN x := 1; END_IF\n"
-      expectProgFailWithDetail @TypeMismatch' src $
+      expectUnitFailWithDetail @TypeMismatch' src $
         \(TypeMismatch' actual) -> actual == INT
 
     it "rejects when condition of ELSIF is not BOOL (1)" $ do
       let src = "PROGRAM P\nVAR\nx:INT;\nEND_VAR\nIF x=0 THEN x := 1; ELSIF 1 THEN x := 2; END_IF\n"
-      -- case parseProgram src of
-      --   Left e -> expectationFailure (show e)
-      --   Right p ->
-      --     elaborateProgram p `shouldSatisfy` \case
-      --       Left [OpTypeMismatch {expected = BOOL, actual = INT}] -> True
-      --       _ -> False
-      expectProgFailWithDetail @TypeMismatch' src $
+      expectUnitFailWithDetail @TypeMismatch' src $
         \(TypeMismatch' actual) -> actual == INT
 
     it "rejects unknown variable inside IF-THEN-ELSE-END_IF" $ do
       let src = "PROGRAM P\nVAR\nx:INT;\nEND_VAR\nIF TRUE THEN z := 1; END_IF\n"
-      -- case parseProgram src of
-      --   Left e -> expectationFailure (show e)
-      --   Right p ->
-      --     elaborateProgram p `shouldSatisfy` \case
-      --       Left [UnknownVar {dName = "z"}] -> True
-      --       _ -> False
-      expectProgFailWithDetail @UnknownVar src $
+      expectUnitFailWithDetail @UnknownVar src $
         \(UnknownVar vname _) -> vname == "z"
 
   describe "WHILE/REPEAT/CASE semantics" $ do
     it "requires BOOL in WHILE condition" $ do
       let src = "PROGRAM P\nVAR\nx:INT;\nEND_VAR\nWHILE 1 DO x := 0; END_WHILE\n"
-      -- expectParsed src $ \p ->
-      --   elaborateProgram p `shouldSatisfy` \case
-      --     Left [OpTypeMismatch {op = "WHILE", expected = BOOL, actual = INT}] -> True
-      --     _ -> False
-      expectProgFailWithDetail @TypeMismatch' src $
+      expectUnitFailWithDetail @TypeMismatch' src $
         \(TypeMismatch' actual) -> actual == INT
 
     it "requires BOOL in REPEAT-UNTIL condition" $ do
       let src = "PROGRAM P\nVAR\nx:INT;\nEND_VAR\nREPEAT x := 1; UNTIL 0 END_REPEAT\n"
-      -- expectParsed src $ \p ->
-      --   elaborateProgram p `shouldSatisfy` \case
-      --     Left [OpTypeMismatch {op = "REPEAT-UNTIL", expected = BOOL, actual = INT}] -> True
-      --     _ -> False
-      expectProgFailWithDetail @TypeMismatch' src $
+      expectUnitFailWithDetail @TypeMismatch' src $
         \(TypeMismatch' actual) -> actual == INT
 
     it "requires INT scrutinee in CASE (minimal)" $ do
       let src = "PROGRAM P\nVAR\ny:BOOL;\nEND_VAR\nCASE y OF 0: y := TRUE; END_CASE\n"
-      -- expectParsed src $ \p ->
-      --   elaborateProgram p `shouldSatisfy` \case
-      --     Left [OpTypeMismatch {op = "CASE", expected = INT, actual = BOOL}] -> True
-      --     _ -> False
-      expectProgFailWithDetail @TypeMismatch' src $
+      expectUnitFailWithDetail @TypeMismatch' src $
         \(TypeMismatch' actual) -> actual == BOOL
 
     it "accepts CASE with arms and ELSE" $ do
       let src = "PROGRAM P\nVAR\nx:INT;\nEND_VAR\nCASE x OF 0: x := 1; 1,2..3: x := 4; ELSE x := 0; END_CASE\n"
-      -- expectParsed src $ \p ->
-      --   elaborateProgram p `shouldSatisfy` isRight
-      expectProgPass src
+      expectUnitPass src
 
   describe "TYPE resolution (semantics)" $ do
     it "resolves alias in VAR and fills default init" $ do
@@ -400,32 +287,11 @@ main = hspec $ do
 
     it "fails on unknown type" $ do
       let src = "PROGRAM P\nVAR\nx: Foo;\nEND_VAR\n"
-      -- case parseUnit src of
-      --   Left e -> expectationFailure (show e)
-      --   Right u ->
-      --     elaborateUnit u
-      --       `shouldFailWith1` ( \case
-      --                             UnknownType {tName = "Foo"} -> True
-      --                             _ -> False
-      --                         )
       expectUnitFailWithDetail @UnknownType src $
         \(UnknownType tname _) -> tname == "Foo"
 
     it "fails on type cycle" $ do
       let src = "TYPE A : B; B : A; END_TYPE\nPROGRAM P\nVAR\nx: A;\nEND_VAR\n"
-      -- case parseUnit src of
-      --   Left e -> expectationFailure (show e)
-      --   Right u ->
-      --     elaborateUnit u `shouldSatisfy` \case
-      --       Left ds ->
-      --         any
-      --           ( \case
-      --               TypeCycle {tName = "A"} -> True
-      --               TypeCycle {tName = "B"} -> True
-      --               _ -> False
-      --           )
-      --           ds
-      --       _ -> False
       expectUnitFailWithDetail @TypeCycle src $
         \(TypeCycle tname _) -> tname == "B"
 
@@ -435,9 +301,6 @@ main = hspec $ do
             "TYPE R : STRUCT a: INT; END_STRUCT; END_TYPE\n\
             \PROGRAM P\nVAR\nr: R; x: INT;\nEND_VAR\n\
             \x := r.a;\n"
-      -- case parseUnit src of
-      --   Left e -> expectationFailure (show e)
-      --   Right u -> elaborateUnit u `shouldSatisfy` isRight
       expectUnitPass src
 
     it "rejects unknown field r.z" $ do
@@ -445,14 +308,6 @@ main = hspec $ do
             "TYPE R : STRUCT a: INT; END_STRUCT; END_TYPE\n\
             \PROGRAM P\nVAR\nr: R; x: INT;\nEND_VAR\n\
             \x := r.z;\n"
-      -- case parseUnit src of
-      --   Left e -> expectationFailure (show e)
-      --   Right u ->
-      --     elaborateUnit u
-      --       `shouldFailWith1` ( \case
-      --                             UnknownField {fName = "z"} -> True
-      --                             _ -> False
-      --                         )
       expectUnitFailWithDetail @UnknownStructMember src $
         \(UnknownStructMember _ member _) -> member == "z"
 
@@ -460,14 +315,6 @@ main = hspec $ do
       let src =
             "PROGRAM P\nVAR\nr: INT; x: INT;\nEND_VAR\n\
             \x := r.a;\n"
-      -- case parseUnit src of
-      --   Left e -> expectationFailure (show e)
-      --   Right u ->
-      --     elaborateUnit u
-      --       `shouldFailWith1` ( \case
-      --                             NotAStruct {} -> True
-      --                             _ -> False
-      --                         )
       expectUnitFail @NotAStruct src
 
   describe "array/struct semantics" $ do
@@ -484,8 +331,6 @@ main = hspec $ do
             "TYPE Point : STRUCT x: INT; END_STRUCT; END_TYPE\n\
             \PROGRAM P\nVAR r: Point; END_VAR\n\
             \r.z := 1;\n"
-      -- expectParsedUnit src $ \u ->
-      --   elaborateUnit u `shouldFailWith1` (\case UnknownField {} -> True; _ -> False)
       expectUnitFail @UnknownStructMember src
 
     it "accepts array index" $ do
@@ -498,66 +343,50 @@ main = hspec $ do
       let src =
             "PROGRAM P\nVAR a: ARRAY [0..2] OF INT; END_VAR\n\
             \a[1,2] := 5;\n"
-      -- expectParsed badCount $ \p ->
-      --   elaborateProgram p `shouldFailWith1` (\case BadIndexCount {expectedN = 1, actualN = 2} -> True; _ -> False)
-      expectProgFail @BadIndexCount src
+      expectUnitFail @BadIndexCount src
 
     it "rejects bad index type" $ do
       let src =
             "PROGRAM P\nVAR a: ARRAY [0..2] OF INT; b: BOOL; END_VAR\n\
             \a[b] := 5;\n"
-      -- expectParsed badType $ \p ->
-      --   elaborateProgram p `shouldFailWith1` (\case OpTypeMismatch {expected = INT, actual = BOOL} -> True; _ -> False)
-      expectProgFailWithDetail @TypeMismatch' src $
+      expectUnitFailWithDetail @TypeMismatch' src $
         \(TypeMismatch' actual) -> actual == BOOL
 
     it "type-checks element type through index" $ do
       let src =
             "PROGRAM P\nVAR a: ARRAY [0..2] OF INT; y: BOOL; END_VAR\n\
             \y := a[0];\n"
-      -- expectParsed src $ \p ->
-      --   elaborateProgram p `shouldFailWith1` (\case TypeMismatch {expected = BOOL, actual = INT} -> True; _ -> False)
-      expectProgFailWithDetail @TypeMismatch src $
+      expectUnitFailWithDetail @TypeMismatch src $
         \(TypeMismatch _ _ expected actual) -> expected == BOOL && actual == INT
 
   describe "FOR semantics" $ do
     it "accepts simple FOR over INT" $ do
       let src = "PROGRAM P\nVAR i:INT; x:INT; END_VAR\nFOR i := 0 TO 3 DO x := i; END_FOR\n"
-      expectProgPass src
+      expectUnitPass src
 
     it "rejects writing to loop var" $ do
       let src = "PROGRAM P\nVAR i:INT; END_VAR\nFOR i := 0 TO 3 DO i := 1; END_FOR\n"
-      -- expectParsed ng $ \p ->
-      --   elaborateProgram p `shouldFailWith1` (\case AssignToLoopVar {dName = "i"} -> True; _ -> False)
-      expectProgFailWithDetail @AssignToLoopVar src $
+      expectUnitFailWithDetail @AssignToLoopVar src $
         \(AssignToLoopVar vname _) -> vname == "i"
 
     it "rejects FOR when loop var is not INT" $ do
       let src = "PROGRAM P\nVAR i:BOOL; END_VAR\nFOR i := 0 TO 1 DO END_FOR\n"
-      -- expectParsed src $ \p ->
-      --   elaborateProgram p `shouldFailWith1` (\case TypeMismatch {dName = "i", expected = INT} -> True; _ -> False)
-      expectProgFailWithDetail @TypeMismatch src $
+      expectUnitFailWithDetail @TypeMismatch src $
         \(TypeMismatch vname _ expected _) -> vname == "i" && expected == INT
 
     it "rejects non-INT (init)" $ do
       let src = "PROGRAM P\nVAR i:INT; END_VAR\nFOR i := TRUE TO 1 DO END_FOR\n"
-      -- expectParsed initBad $ \p ->
-      --   elaborateProgram p `shouldFailWith1` (\case OpTypeMismatch {op = "FOR-init", expected = INT, actual = BOOL} -> True; _ -> False)
-      expectProgFailWithDetail @TypeMismatch' src $
+      expectUnitFailWithDetail @TypeMismatch' src $
         \(TypeMismatch' actual) -> actual == BOOL
 
     it "rejects non-INT (end)" $ do
       let src = "PROGRAM P\nVAR i:INT; END_VAR\nFOR i := 0 TO FALSE DO END_FOR\n"
-      -- expectParsed endBad $ \p ->
-      --   elaborateProgram p `shouldFailWith1` (\case OpTypeMismatch {op = "FOR-end", expected = INT, actual = BOOL} -> True; _ -> False)
-      expectProgFailWithDetail @TypeMismatch' src $
+      expectUnitFailWithDetail @TypeMismatch' src $
         \(TypeMismatch' actual) -> actual == BOOL
 
     it "rejects non-INT (by)" $ do
       let src = "PROGRAM P\nVAR i:INT; END_VAR\nFOR i := 0 TO 10 BY TRUE DO END_FOR\n"
-      -- expectParsed byBad $ \p ->
-      --   elaborateProgram p `shouldFailWith1` (\case OpTypeMismatch {op = "FOR-by", expected = INT, actual = BOOL} -> True; _ -> False)
-      expectProgFailWithDetail @TypeMismatch' src $
+      expectUnitFailWithDetail @TypeMismatch' src $
         \(TypeMismatch' actual) -> actual == BOOL
 
   describe "ENUM semantics" $ do
@@ -574,12 +403,6 @@ main = hspec $ do
             "TYPE Color : (Red, Green); END_TYPE\n\
             \PROGRAM P\nVAR c: Color; END_VAR\n\
             \c := Color.Blue;\n"
-      -- expectParsedUnit src $ \u ->
-      --   elaborateUnit u
-      --     `shouldFailWith1` ( \case
-      --                           UnknownEnumValue {tName = "Color", eName = "Blue"} -> True
-      --                           _ -> False
-      --                       )
       expectUnitFailWithDetail @UnknownEnumMember src $
         \(UnknownEnumMember ename mname _) -> ename == "Color" && mname == "Blue"
 
@@ -588,12 +411,6 @@ main = hspec $ do
             "TYPE MyInt : INT; END_TYPE\n\
             \PROGRAM P\nVAR x: INT; END_VAR\n\
             \x := MyInt.X;\n"
-      -- expectParsedUnit src $ \u ->
-      --   elaborateUnit u
-      --     `shouldFailWith1` ( \case
-      --                           NotAnEnum {tName = "MyInt"} -> True
-      --                           _ -> False
-      --                       )
       expectUnitFailWithDetail @NotAnEnum src $
         \(NotAnEnum name _ _) -> name == "MyInt"
 
@@ -610,12 +427,6 @@ main = hspec $ do
             "TYPE Color : (Red, Green); END_TYPE\n\
             \PROGRAM P\nVAR c:Color; x:INT; END_VAR\n\
             \CASE c OF 0: x := 1; END_CASE\n"
-      -- expectParsedUnit src $ \u ->
-      --   elaborateUnit u
-      --     `shouldFailWith1` ( \case
-      --                           OpTypeMismatch {op = "CASE"} -> True
-      --                           _ -> False
-      --                       )
       expectUnitFail @TypeMismatch' src
 
   describe "Enum default init" $ do
@@ -641,13 +452,6 @@ main = hspec $ do
             \TYPE B : (X,Y); END_TYPE\n\
             \PROGRAM P\nVAR a: A; b: B; END_VAR\n\
             \a := B.X;\n"
-      -- expectParsedUnit src $ \u ->
-      --   elaborateUnit u
-      --     `shouldFailWith1` ( \case
-      --                           TypeMismatch {expected = Named nA, actual = Named nB} ->
-      --                             locVal nA == "A" && locVal nB == "B"
-      --                           _ -> False
-      --                       )
       expectUnitFailWithDetail @TypeMismatch src $
         \(TypeMismatch _ _ (Named nA) (Named nB)) -> locVal nA == "A" && locVal nB == "B"
 
@@ -665,13 +469,6 @@ main = hspec $ do
             \TYPE B : (X); END_TYPE\n\
             \PROGRAM P\nVAR a: A; END_VAR\n\
             \IF a = B.X THEN a := A.X; END_IF\n"
-      -- expectParsedUnit ng $ \u ->
-      --   elaborateUnit u
-      --     `shouldFailWith1` ( \case
-      --                           OpTypeMismatch {op = "=", expected = Named nA, actual = Named nB} ->
-      --                             locVal nA == "A" && locVal nB == "B"
-      --                           _ -> False
-      --                       )
       expectUnitFailWithDetail @TypeMismatch' src $
         \(TypeMismatch' (Named nB)) -> locVal nB == "B"
 
@@ -723,12 +520,6 @@ main = hspec $ do
             "TYPE Color : (Red := 0, Green := 2); END_TYPE\n\
             \PROGRAM P\nVAR c: Color; END_VAR\n\
             \c := Color.Blue;\n"
-      -- expectParsedUnit src $ \u ->
-      --   elaborateUnit u
-      --     `shouldFailWith1` ( \case
-      --                           UnknownEnumValue {tName = "Color", eName = "Blue"} -> True
-      --                           _ -> False
-      --                       )
       expectUnitFailWithDetail @UnknownEnumMember src $
         \(UnknownEnumMember nA nB _) -> nA == "Color" && nB == "Blue"
 
@@ -745,78 +536,36 @@ main = hspec $ do
             "TYPE Color : (Red := 0, Green := 2); END_TYPE\n\
             \PROGRAM P\nVAR c: Color; END_VAR\n\
             \c := Color.Blue;\n"
-      -- expectParsedUnit src $ \u ->
-      --   elaborateUnit u
-      --     `shouldFailWith1` ( \case
-      --                           UnknownEnumValue {tName = "Color", eName = "Blue"} -> True
-      --                           _ -> False
-      --                       )
       expectUnitFailWithDetail @UnknownEnumMember src $
         \(UnknownEnumMember nA nB _) -> nA == "Color" && nB == "Blue"
 
   describe "MOD/XOR semantics" $ do
     let base = "PROGRAM P\nVAR x:INT; b:BOOL; END_VAR\n"
     it "accepts MOD on INT" $
-      expectProgPass (base <> "x := 7 MOD 4;\n")
+      expectUnitPass (base <> "x := 7 MOD 4;\n")
 
     it "rejects MOD type mismatch" $
-      -- expectParsed (base <> "x := TRUE MOD 2;\n") $ \p ->
-      --   elaborateProgram p
-      --     `shouldFailWith1` ( \case
-      --                           OpTypeMismatch {op = "MOD", expected = INT, actual = BOOL} -> True
-      --                           _ -> False
-      --                       )
-      -- expectParsed (base <> "x := TRUE MOD 2;\n") $ \p ->
-      --   elaborateProgram p
-      --     `shouldFailWith1` ( \case
-      --                           OpTypeMismatch {op = "MOD", expected = INT, actual = BOOL} -> True
-      --                           _ -> False
-      --                       )
-      -- expectParsed (base <> "x := TRUE MOD 2;\n") $ \p ->
-      --   elaborateProgram p
-      --     `shouldFailWith1` ( \case
-      --                           OpTypeMismatch {op = "MOD", expected = INT, actual = BOOL} -> True
-      --                           _ -> False
-      --                       )
-      expectProgFailWithDetail @TypeMismatch' (base <> "x := TRUE MOD 2;\n") $
+      expectUnitFailWithDetail @TypeMismatch' (base <> "x := TRUE MOD 2;\n") $
         \(TypeMismatch' actual) -> actual == BOOL
 
     it "accepts XOR on BOOL" $
-      expectProgPass (base <> "b := TRUE XOR FALSE;\n")
+      expectUnitPass (base <> "b := TRUE XOR FALSE;\n")
 
     it "rejects XOR type mismatch" $
-      -- expectParsed (base <> "b := 1 XOR 0;\n") $ \p ->
-      --   elaborateProgram p
-      --     `shouldFailWith1` ( \case
-      --                           OpTypeMismatch {op = "XOR"} -> True
-      --                           _ -> False
-      --                       )
-      expectProgFail @TypeMismatch' (base <> "b := 1 XOR 0;\n")
+      expectUnitFail @TypeMismatch' (base <> "b := 1 XOR 0;\n")
 
   describe "REAL semantics (minimal)" $ do
     it "allows arithmetic mixing INT and REAL; result is REAL" $ do
       let src = "PROGRAM P\nVAR r:REAL; x:INT; END_VAR\nr := x + 2.5;\n"
-      expectProgPass src
+      expectUnitPass src
 
     it "rejects MOD on REAL" $ do
       let src = "PROGRAM P\nVAR r:REAL; END_VAR\nr := 5.0 MOD 2.0;\n"
-      -- expectParsed src $ \p ->
-      --   elaborateProgram p
-      --     `shouldFailWith1` ( \case
-      --                           OpTypeMismatch {op = "MOD"} -> True
-      --                           _ -> False
-      --                       )
-      expectProgFail @TypeMismatch' src
+      expectUnitFail @TypeMismatch' src
 
     it "rejects NOT on REAL" $ do
       let src = "PROGRAM P\nVAR r:REAL; END_VAR\nIF NOT 1.0 THEN r := 0.0; END_IF\n"
-      -- expectParsed src $ \p ->
-      --   elaborateProgram p
-      --     `shouldFailWith1` ( \case
-      --                           OpTypeMismatch {op = "NOT", expected = BOOL} -> True
-      --                           _ -> False
-      --                       )
-      expectProgFail @TypeMismatch' src
+      expectUnitFail @TypeMismatch' src
 
   describe "LREAL semantics" $ do
     it "accepts assignment of LREAL typed literal and equality" $ do
@@ -824,53 +573,45 @@ main = hspec $ do
             "PROGRAM P\nVAR x: LREAL; END_VAR\n\
             \x := LREAL#1.5;\n\
             \IF x = LREAL#1.5 THEN x := LREAL#2.0; END_IF\n"
-      expectProgPass src
+      expectUnitPass src
 
     it "arith/comp require same floating type" $ do
       let src =
             "PROGRAM P\nVAR a:LREAL; b:LREAL; END_VAR\n\
             \a := LREAL#1.0 + LREAL#2.0;\n\
             \IF a >= LREAL#3.0 THEN a := a; END_IF\n"
-      expectProgPass src
+      expectUnitPass src
 
   describe "numeric promotion (INT → REAL)" $ do
     it "allows assigning INT to REAL" $ do
       let src = "PROGRAM P\nVAR a: REAL; END_VAR\na := 1;\n"
-      expectProgPass src
+      expectUnitPass src
 
     it "allows IF with mixed REAL/INT comparison" $ do
       let src = "PROGRAM P\nVAR x: INT; END_VAR\nIF 1.0 < 2 THEN x := 0; END_IF\n"
-      expectProgPass src
+      expectUnitPass src
 
     it "rejects assigning REAL to INT" $ do
       let src = "PROGRAM P\nVAR i: INT; END_VAR\ni := 1.5;\n"
-      -- expectParsed src $ \p ->
-      --   elaborateProgram p `shouldSatisfy` \case
-      --     Left [TypeMismatch {expected = INT, actual = REAL}] -> True
-      --     _ -> False
-      expectProgFailWithDetail @TypeMismatch src $
+      expectUnitFailWithDetail @TypeMismatch src $
         \(TypeMismatch _ _ expected actual) -> expected == INT && actual == REAL
 
     it "still allows arithmetic mixing (result REAL) and assign to REAL" $ do
       let src = "PROGRAM P\nVAR a: REAL; END_VAR\na := 1 + 2.0;\n"
-      expectProgPass src
+      expectUnitPass src
 
   describe "numeric promotion (INT → LREAL)" $ do
     it "allows assigning INT to LREAL" $ do
       let src = "PROGRAM P\nVAR a: LREAL; END_VAR\na := 1;\n"
-      expectProgPass src
+      expectUnitPass src
 
     it "allows initializer INT to LREAL" $ do
       let src = "PROGRAM P\nVAR a: LREAL := 1; END_VAR\n"
-      expectProgPass src
+      expectUnitPass src
 
     it "rejects assigning LREAL to INT" $ do
       let src = "PROGRAM P\nVAR i: INT; END_VAR\ni := 1.0;\n" -- 小数は REAL/LREAL 扱い → INT へは不可
-      -- expectParsed src $ \p ->
-      --   elaborateProgram p `shouldSatisfy` \case
-      --     Left [TypeMismatch {expected = INT, actual = REAL}] -> True
-      --     _ -> False
-      expectProgFailWithDetail @TypeMismatch src $
+      expectUnitFailWithDetail @TypeMismatch src $
         \(TypeMismatch _ _ expected actual) -> expected == INT && actual == REAL
 
   describe "STRING default init (semantics)" $ do
@@ -903,37 +644,25 @@ main = hspec $ do
   describe "STRING semantics" $ do
     it "allows comparison" $ do
       let src = "PROGRAM P\nVAR b: BOOL; END_VAR\nb := 'a' < 'b';\n"
-      expectProgPass src
+      expectUnitPass src
 
     it "rejects mixing STRING with INT in +" $ do
       -- 連結は不可
       let src = "PROGRAM P\nVAR s: STRING; END_VAR\ns := 'a' + 1;\n"
-      -- expectParsed src $ \p ->
-      --   elaborateProgram p
-      --     `shouldFailWith1` ( \case
-      --                           OpTypeMismatch {op = "+"} -> True
-      --                           _ -> False
-      --                       )
-      expectProgFail @TypeMismatch' src
+      expectUnitFail @TypeMismatch' src
 
   describe "CASE type consistency (baseline)" $ do
     it "accepts INT scrutinee with INT selectors (value/range/ELSE)" $ do
       let src =
             "PROGRAM P\nVAR x: INT; END_VAR\n\
             \CASE x OF 0: ; 1..3: ; ELSE ; END_CASE\n"
-      expectProgPass src
+      expectUnitPass src
 
     it "rejects enum selector when scrutinee is INT" $ do
       let src =
             "TYPE Color : (Red, Green); END_TYPE\n\
             \PROGRAM P\nVAR x: INT; END_VAR\n\
             \CASE x OF Color.Red: ; END_CASE\n"
-      -- expectParsedUnit src $ \u ->
-      --   elaborateUnit u
-      --     `shouldFailWith1` ( \case
-      --                           OpTypeMismatch {op = "CASE", expected = INT} -> True
-      --                           _ -> False
-      --                       )
       expectUnitFail @TypeMismatch' src
 
     it "accepts enum scrutinee with matching enum constructors" $ do
@@ -949,24 +678,12 @@ main = hspec $ do
             \TYPE Shape : (Circle); END_TYPE\n\
             \PROGRAM P\nVAR c: Color; END_VAR\n\
             \CASE c OF Shape.Circle: ; END_CASE\n"
-      -- expectParsedUnit src $ \u ->
-      --   elaborateUnit u
-      --     `shouldFailWith1` ( \case
-      --                           OpTypeMismatch {op = "CASE"} -> True
-      --                           _ -> False
-      --                       )
       expectUnitFail @TypeMismatch' src
 
     it "rejects BOOL scrutinee (only INT or enum allowed)" $ do
       let src =
             "PROGRAM P\nVAR b: BOOL; END_VAR\n\
             \CASE b OF 0: ; END_CASE\n"
-      -- expectParsedUnit src $ \u ->
-      --   elaborateUnit u
-      --     `shouldFailWith1` ( \case
-      --                           OpTypeMismatch {op = "CASE", actual = BOOL} -> True
-      --                           _ -> False
-      --                       )
       expectUnitFail @TypeMismatch' src
 
   describe "CASE selector validity (INT)" $ do
@@ -975,66 +692,36 @@ main = hspec $ do
       let src =
             "PROGRAM P\nVAR x: INT; END_VAR\n\
             \CASE x OF 0: ; 2..4: ; 5: ; END_CASE\n"
-      expectProgPass src
+      expectUnitPass src
 
     it "rejects a range with low > high (e.g., 5..3)" $ do
       let src =
             "PROGRAM P\nVAR x: INT; END_VAR\n\
             \CASE x OF 5..3: ; END_CASE\n"
-      -- expectParsedUnit src $ \u ->
-      --   elaborateUnit u
-      --     `shouldFailWith1` ( \case
-      --                           InvalidCaseRange {} -> True
-      --                           _ -> False
-      --                       )
-      expectProgFail @InvalidCaseRange src
+      expectUnitFail @InvalidCaseRange src
 
     it "rejects duplicate literal within the same arm (1,1)" $ do
       let src =
             "PROGRAM P\nVAR x: INT; END_VAR\n\
             \CASE x OF 1,1: ; END_CASE\n"
-      -- expectParsedUnit src $ \u ->
-      --   elaborateUnit u
-      --     `shouldFailWith1` ( \case
-      --                           OverlappingCase {} -> True
-      --                           _ -> False
-      --                       )
-      expectProgFail @OverlappingCase src
+      expectUnitFail @OverlappingCase src
 
     it "rejects overlap value vs range within the same arm (1,1..3)" $ do
       let src =
             "PROGRAM P\nVAR x: INT; END_VAR\n\
             \CASE x OF 1,1..3: ; END_CASE\n"
-      -- expectParsedUnit src $ \u ->
-      --   elaborateUnit u
-      --     `shouldFailWith1` ( \case
-      --                           OverlappingCase {} -> True
-      --                           _ -> False
-      --                       )
       expectUnitFail @OverlappingCase src
 
     it "rejects overlap range vs range within the same arm (1..3,3..5)" $ do
       let src =
             "PROGRAM P\nVAR x: INT; END_VAR\n\
             \CASE x OF 1..3,3..5: ; END_CASE\n"
-      -- expectParsedUnit src $ \u ->
-      --   elaborateUnit u
-      --     `shouldFailWith1` ( \case
-      --                           OverlappingCase {} -> True
-      --                           _ -> False
-      --                       )
       expectUnitFail @OverlappingCase src
 
     it "rejects overlap across different arms (1..3: ; 3..5: ;)" $ do
       let src =
             "PROGRAM P\nVAR x: INT; END_VAR\n\
             \CASE x OF 1..3: ; 3..5: ; END_CASE\n"
-      -- expectParsedUnit src $ \u ->
-      --   elaborateUnit u
-      --     `shouldFailWith1` ( \case
-      --                           OverlappingCase {} -> True
-      --                           _ -> False
-      --                       )
       expectUnitFail @OverlappingCase src
 
     it "accepts touching but non-overlapping ranges (1..3, 4..5)" $ do
@@ -1057,24 +744,12 @@ main = hspec $ do
             "PROGRAM P\nVAR x: INT; END_VAR\n\
             \VAR CONSTANT k0: INT := 5; k1: INT := 7; END_VAR\n\
             \CASE x OF k0+1: ; k0..(k1-1): ; END_CASE\n"
-      -- expectParsedUnit src $ \u ->
-      --   elaborateUnit u
-      --     `shouldFailWith1` ( \case
-      --                           NonConstantExpr {} -> True
-      --                           _ -> False
-      --                       )
       expectUnitFail @NonConstantExpr src
 
     it "rejects non-constant variable in a label" $ do
       let src =
             "PROGRAM P\nVAR x: INT; y: INT; END_VAR\n\
             \CASE x OF y+1: ; END_CASE\n"
-      -- expectParsedUnit src $ \u ->
-      --   elaborateUnit u
-      --     `shouldFailWith1` ( \case
-      --                           NonConstantExpr {} -> True
-      --                           _ -> False
-      --                       )
       expectUnitFail @NonConstantExpr src
 
     it "accepts enum labels from a constant of that enum" $ do
@@ -1090,13 +765,6 @@ main = hspec $ do
             "TYPE Color : (Red, Green); END_TYPE\n\
             \PROGRAM P\nVAR c: Color; END_VAR\n\
             \CASE c OF 1+2: ; END_CASE\n"
-      -- expectParsedUnit src $ \u ->
-      --   elaborateUnit u
-      --     -- `shouldFailWith1` ( \case
-      --     --                       OpTypeMismatch {} -> True
-      --     --                       _ -> False
-      --     --                   )
-      --     `shouldFailWith1` opTypeMismatch "CASE"
       expectUnitFail @TypeMismatch' src
 
     it "rejects indexer in label (not a constant expression)" $ do
@@ -1104,12 +772,6 @@ main = hspec $ do
       let src =
             "PROGRAM P\nVAR x: INT; v: ARRAY[0..1] OF INT; END_VAR\n\
             \CASE x OF v[0]: ; END_CASE\n"
-      -- expectParsedUnit src $ \u ->
-      --   elaborateUnit u
-      --     `shouldFailWith1` ( \case
-      --                           NonConstantExpr {} -> True
-      --                           _ -> False
-      --                       )
       expectUnitFail @NonConstantExpr src
 
   -- describe "CASE unreachable arms (semantics)" $ do
@@ -1172,11 +834,6 @@ main = hspec $ do
             \  b:BYTE; w:WORD; dw:DWORD; lw:LWORD;\n\
             \END_VAR\n"
       expectParsed src $ \prog ->
-        -- elaborateProgram prog `shouldSatisfy` \case
-        --   Right (Program _ (VarDecls vs) _) ->
-        --     -- すべての varInit が Just (EINT 0) であることを確認
-        --     all (\v -> varInit v == Just (EINT 0)) vs
-        --   _ -> False
         let p :: VEither AllErrs Program
             p = elaborateProgram prog
          in p `shouldSatisfy` \case
@@ -1199,12 +856,6 @@ main = hspec $ do
       let src =
             "PROGRAM P\nVAR us:USINT; END_VAR\n\
             \us := TRUE;\n"
-      -- expectParsed src $ \prog ->
-      --   elaborateProgram prog
-      --     `shouldFailWith1` ( \case
-      --                           TypeMismatch {dName = "us"} -> True
-      --                           _ -> False
-      --                       )
       expectUnitFailWithDetail @TypeMismatch src $
         \(TypeMismatch vname _ _ _) -> vname == "us"
 
@@ -1221,12 +872,6 @@ main = hspec $ do
 
     it "rejects out-of-range literal (e.g., 256 -> USINT)" $ do
       let src = "PROGRAM P\nVAR us:USINT; END_VAR\nus := 256;\n"
-      -- expectParsed src $ \p ->
-      --   elaborateProgram p
-      --     `shouldFailWith1` ( \case
-      --                           OutOfRange {dName = "us", target = USINT} -> True
-      --                           _ -> False
-      --                       )
       expectUnitFailWithDetail @OutOfRange src $
         \(OutOfRange vname tgt _ _) -> vname == "us" && tgt == USINT
 
@@ -1243,12 +888,6 @@ main = hspec $ do
       let src =
             "PROGRAM P\nVAR s: SINT; END_VAR\n\
             \s := 16#80;\n"
-      -- expectParsed src $ \p ->
-      --   elaborateProgram p
-      --     `shouldFailWith1` ( \case
-      --                           OutOfRange {} -> True
-      --                           _ -> False
-      --                       )
       expectUnitFail @OutOfRange src
 
     -- NG: UINT に 16#10000 (65536) は範囲外
@@ -1256,12 +895,6 @@ main = hspec $ do
       let src =
             "PROGRAM P\nVAR x: UINT; END_VAR\n\
             \x := 16#10000;\n"
-      -- expectParsed src $ \p ->
-      --   elaborateProgram p
-      --     `shouldFailWith1` ( \case
-      --                           OutOfRange {} -> True
-      --                           _ -> False
-      --                       )
       expectUnitFail @OutOfRange src
 
     -- OK: UDINT に 16#FFFF_FFFF (4294967295)
@@ -1289,24 +922,12 @@ main = hspec $ do
     it "reports OutOfRange for underscored decimal literal" $ do
       -- 128 は SINT の範囲外
       let src = "PROGRAM P\nVAR s: SINT; END_VAR\ns := 1_2_8;\n"
-      -- expectParsed src $ \p ->
-      --   elaborateProgram p
-      --     `shouldFailWith1` ( \case
-      --                           OutOfRange {target = SINT} -> True
-      --                           _ -> False
-      --                       )
       expectUnitFailWithDetail @OutOfRange src $
         \(OutOfRange _ tgt _ _) -> tgt == SINT
 
     it "reports OutOfRange for underscored based literal" $ do
       -- 2#1_0000_0000 = 256 は SINT の範囲外
       let src = "PROGRAM P\nVAR s: SINT; END_VAR\ns := 2#1_0000_0000;\n"
-      -- expectParsed src $ \p ->
-      --   elaborateProgram p
-      --     `shouldFailWith1` ( \case
-      --                           OutOfRange {target = SINT} -> True
-      --                           _ -> False
-      --                       )
       expectUnitFailWithDetail @OutOfRange src $
         \(OutOfRange _ tgt _ _) -> tgt == SINT
 
@@ -1501,9 +1122,6 @@ main = hspec $ do
       let ng =
             "PROGRAM P\nVAR x: BYTE; END_VAR\n\
             \x := 16#100;\n"
-      -- expectParsed ng $ \p ->
-      --   elaborateProgram p
-      --     `shouldFailWith1` (\case OutOfRange {} -> True; _ -> False)
       expectUnitFail @OutOfRange ng
 
     it "USINT accepts 2#1111_1111 and rejects 2#1_0000_0000" $ do
@@ -1515,9 +1133,6 @@ main = hspec $ do
       let ng =
             "PROGRAM P\nVAR u: USINT; END_VAR\n\
             \u := 2#1_0000_0000;\n" -- 256
-            -- expectParsed ng $ \p ->
-            --   elaborateProgram p
-            --     `shouldFailWith1` (\case OutOfRange {} -> True; _ -> False)
       expectUnitFail @OutOfRange ng
 
     it "INT accepts 16#7FFF and -16#8000; rejects 16#8000 and -16#8001" $ do
@@ -1534,17 +1149,11 @@ main = hspec $ do
       let ng1 =
             "PROGRAM P\nVAR z: INT; END_VAR\n\
             \z := 16#8000;\n" --  32768 NG
-            -- expectParsed ng1 $ \p ->
-            --   elaborateProgram p
-            --     `shouldFailWith1` (\case OutOfRange {} -> True; _ -> False)
       expectUnitFail @OutOfRange ng1
 
       let ng2 =
             "PROGRAM P\nVAR z: INT; END_VAR\n\
             \z := -16#8001;\n" -- -32769 NG
-            -- expectParsed ng2 $ \p ->
-            --   elaborateProgram p
-            --     `shouldFailWith1` (\case OutOfRange {} -> True; _ -> False)
       expectUnitFail @OutOfRange ng2
 
     it "UDINT accepts 16#FFFF_FFFF and rejects 16#1_0000_0000" $ do
@@ -1556,9 +1165,6 @@ main = hspec $ do
       let ng =
             "PROGRAM P\nVAR d: UDINT; END_VAR\n\
             \d := 16#1_0000_0000;\n" -- 4294967296 NG
-            -- expectParsed ng $ \p ->
-            --   elaborateProgram p
-            --     `shouldFailWith1` (\case OutOfRange {} -> True; _ -> False)
       expectUnitFail @OutOfRange ng
 
   describe "Bitwise operators over bitstrings (semantics)" $ do
@@ -1626,13 +1232,6 @@ main = hspec $ do
             \VAR b: BOOL; w: WORD; END_VAR\n\
             \b := b XOR w;\n"
       expectUnitFail @TypeMismatch' src
-  -- CHAR / WCHAR / WSTRING: 代入・比較（意味論）
-
-  -- すでにあるヘルパ:
-  --   shouldParseUnit :: Text -> Expectation  -- parse + elaborate が Right
-  --   opTypeMismatch :: Text -> SemantDiag -> Bool
-  --   typeMismatchOn :: Text -> SemantDiag -> Bool
-  --   ※ elaborateUnit を使うときは shouldFailWith1 と上の述語で判定
 
   describe "CHAR/WCHAR/WSTRING semantics" $ do
     it "accepts assignment: CHAR <- 'Z', WCHAR <- \"Z\", STRING <- 'hi', WSTRING <- \"hi\"" $ do
@@ -1657,8 +1256,6 @@ main = hspec $ do
             "PROGRAM P\n\
             \VAR s: STRING(10); END_VAR\n\
             \s := \"abc\";\n"
-      -- expectParsedUnit src $ \u ->
-      --   elaborateUnit u `shouldFailWith1` typeMismatch "s"
       expectUnitFailWithDetail @TypeMismatch src $
         \(TypeMismatch vname _ _ _) -> vname == "s"
 
@@ -1722,14 +1319,12 @@ main = hspec $ do
             \VAR a: ARRAY[0..2] OF INT := [1,2,3]; END_VAR\n"
       expectUnitPass src
 
-    -- ★ 修正: 少なすぎる要素は受理し、残りは既定値でパディング
     it "accepts too-few initializer elements (pads with defaults)" $ do
       let src =
             "PROGRAM P\n\
             \VAR a: ARRAY[0..2] OF INT := [1,2]; END_VAR\n"
       expectUnitPass src
 
-    -- ★ 過剰は引き続きエラー
     it "rejects too-many initializer elements" $ do
       let src =
             "PROGRAM P\n\
@@ -1742,7 +1337,6 @@ main = hspec $ do
             \VAR a: ARRAY[0..1] OF LREAL := [1, 2.0]; END_VAR\n"
       expectUnitPass src
 
-    -- ▼ 暫定: -1 の型解釈(SINT)と USINT への暗黙変換が入るまでは pending
     it "accepts USINT element from -1 via implicit SINT->USINT (pending)" $ do
       pendingWith "literal typing (SINT) & implicit SINT->USINT not implemented yet"
       let src =
@@ -1758,7 +1352,6 @@ main = hspec $ do
             \VAR r1: R := (x := 1, y := 2.0); r2: R := (y := 2.0, x := 1); END_VAR\n"
       expectUnitPass src
 
-    -- ★ 修正: 欠落フィールドは受理し、既定値で補完
     it "accepts missing fields (fills omitted with defaults)" $ do
       let src =
             "TYPE R : STRUCT x: INT; y: INT; END_STRUCT; END_TYPE\n\
@@ -1766,7 +1359,6 @@ main = hspec $ do
             \VAR r: R := (x := 1); END_VAR\n"
       expectUnitPass src
 
-    -- ★ 未知フィールドは引き続きエラー
     it "rejects unknown field in aggregate" $ do
       let src =
             "TYPE R : STRUCT x: INT; y: INT; END_STRUCT; END_TYPE\n\
@@ -1790,7 +1382,6 @@ main = hspec $ do
       expectUnitFail @IndexOutOfBounds src
 
     it "flags out-of-bounds when index is VAR CONSTANT" $ do
-      -- pendingWith "constructing env with int literal not implemented yet"
       let src =
             "PROGRAM P\n\
             \VAR a: ARRAY[0..2] OF INT; x: INT; END_VAR\n\
