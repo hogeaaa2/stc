@@ -818,3 +818,69 @@ main = hspec $ do
               [("a", Array [ArrRange 0 1] (Named i), mi, False)] -> isJust mi && locVal i == "R"
               _ -> False
           _ -> expectationFailure "unexpected pattern"
+
+  describe "IEC 61131-3 Date/Time literals (parsing, spec examples)" $ do
+    let mk :: Text -> Text -> Text
+        mk decl assign =
+          T.concat
+            [ "PROGRAM P\nVAR ",
+              decl,
+              " END_VAR\n",
+              assign,
+              "\n"
+            ]
+
+    -- いまサポート前提で回す（TIME/TOD/DATE/DT、秒小数・区切りアンダースコアあり）
+    let supportedNow :: [(Text, Text)]
+        supportedNow =
+          -- Duration (no underscore) short/long
+          [ ("t: TIME;", "t := T#14ms;"),
+            ("t: TIME;", "t := T#-14ms;"),
+            ("t: TIME;", "t := T#14.7s;"),
+            ("t: TIME;", "t := T#14.7m;"),
+            ("t: TIME;", "t := T#14.7h;"),
+            ("t: TIME;", "t := T#14.7d;"),
+            ("t: TIME;", "t := T#25h15m;"),
+            -- us/ns なし版（仕様例は us/ns ありだが、ここでは ms までに留める）
+            ("t: TIME;", "t := T#12h4m34ms;"),
+            -- long prefix
+            ("t: TIME;", "t := TIME#14ms;"),
+            ("t: TIME;", "t := TIME#-14ms;"),
+            ("t: TIME;", "t := time#14.7s;"),
+            -- Duration (with underscore)
+            ("t: TIME;", "t := t#25h_15m;"),
+            ("t: TIME;", "t := t#5d_14h_12m_18s_3.5ms;"),
+            ("t: TIME;", "t := TIME#25h_15m;"),
+            -- Date / Time of day / Date and time
+            ("d: DATE;", "d := DATE#1984-06-25;"), -- 1a
+            ("d: DATE;", "d := date#2010-09-22;"), -- 1a (lower-case)
+            ("d: DATE;", "d := D#1984-06-25;"), -- 1b
+            ("tod: TIME_OF_DAY;", "tod := TIME_OF_DAY#15:36:55.36;"), -- 3a
+            ("tod: TOD;", "tod := TOD#15:36:55.36;"), -- 3b
+            ("dt: DATE_AND_TIME;", "dt := DATE_AND_TIME#1984-06-25-15:36:55.360227400;"), -- 5a (ns 桁まで)
+            ("dt: DT;", "dt := DT#1984-06-25-15:36:55.360_227_400;") -- 5b (下位桁にアンダースコア)
+          ]
+
+    let supported2 :: [(Text, Text, Text)] -- (理由, decl, assign)
+        supported2 =
+          [ ("LTIME literal (short)", "lt: LTIME;", "lt := LT#14.7s;"),
+            ("LTIME literal (multi)", "lt: LTIME;", "lt := lt#5d14h12m18s3.5ms;"),
+            ("LTIME with us/ns", "lt: LTIME;", "lt := t#12h4m34ms230us400ns;"),
+            ("LTIME with underscore", "lt: LTIME;", "lt := t#5d_14h_12m_18s_3.5ms;"),
+            ("LTIME long prefix underscore", "lt: LTIME;", "lt := LTIME#5m_30s_500ms_100.1us;"),
+            ("ltime long prefix", "lt: LTIME;", "lt := ltime#5d_14h_12m_18s_3.5ms;"),
+            ("LTIME ns", "lt: LTIME;", "lt := LTIME#34s_345ns;"),
+            ("LDATE (long)", "ld: LDATE;", "ld := LDATE#2012-02-29;"), -- 2a
+            ("LDATE (short)", "ld: LDATE;", "ld := LD#1984-06-25;"), -- 2b
+            ("LTOD (short)", "ltod: LTOD;", "ltod := LTOD#15:36:55.36;"), -- 4a
+            ("LTIME_OF_DAY (long)", "ltod: LTOD;", "ltod := LTIME_OF_DAY#15:36:55.36;"), -- 4b
+            ("LDATE_AND_TIME (long)", "ldt: LDATE_AND_TIME;", "ldt := LDATE_AND_TIME#1984-06-25-15:36:55.360_227_400;"), -- 6a
+            ("LDT (short)", "ldt: LDT;", "ldt := LDT#1984-06-25-15:36:55.360_227_400;") -- 6b
+          ]
+
+    forM_ supportedNow $ \(decl, stmt) ->
+      it ("parses: " <> T.unpack stmt) $ do
+        expectRight (parseProgram (mk decl stmt)) (const $ pure ())
+    forM_ supported2 $ \(why, decl, stmt) ->
+      it ("parses: " <> T.unpack why <> " - " <> T.unpack stmt) $ do
+        expectRight (parseProgram (mk decl stmt)) (const $ pure ())

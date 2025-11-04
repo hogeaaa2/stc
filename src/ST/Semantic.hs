@@ -362,6 +362,14 @@ defaultInitWithTypes tenv = go
       WCHAR -> Just (EWCHAR '\0')
       STRING _ -> Just (ESTRING "")
       WSTRING _ -> Just (EWSTRING "")
+      TIME -> Just (ETIME 0)
+      LTIME -> Just (ELTIME 0)
+      TOD -> Just (ETOD (TimeOfDay 0 0 0 0))
+      LTOD -> Just (ELTOD (TimeOfDay 0 0 0 0))
+      DATE -> Just (EDATE (Date 1970 1 1))
+      LDATE -> Just (ELDATE (Date 1970 1 1))
+      DT -> Just (EDT (DateTime (Date 1970 1 1) (TimeOfDay 0 0 0 0)))
+      LDT -> Just (ELDT (DateTime (Date 1970 1 1) (TimeOfDay 0 0 0 0)))
       -- 構造体: 各フィールドの既定初期化を合成（すべて Just のときだけ）
       Struct fs -> do
         fields <- traverse (\(fld, fty) -> (,) fld <$> go fty) fs
@@ -377,7 +385,6 @@ defaultInitWithTypes tenv = go
           (const Nothing)
           go
           (resolveType tenv ty)
-      -- その他は未定義
       _ -> Nothing
 
 -- 暗黙昇格okかどうか
@@ -387,6 +394,10 @@ canPromote from to =
     (INT, REAL) -> True
     (INT, LREAL) -> True
     (REAL, LREAL) -> True
+    (TIME, LTIME) -> True
+    (TOD, LTOD) -> True
+    (DATE, LDATE) -> True
+    (DT, LDT) -> True
     _ -> False
 
 assignCoerce :: TypeEnv -> STType -> STType -> Bool
@@ -524,6 +535,14 @@ inferType tenv env = \case
           else
             VEither.fromLeft $ UnknownEnumMember (locVal ty) (locVal ctor) (locSpan ctor)
       other -> VEither.fromLeft $ NotAnEnum (locVal ty) (locSpan ty) other
+  ETIME _ -> VRight TIME
+  ELTIME _ -> VRight LTIME
+  ETOD _ -> VRight TOD
+  ELTOD _ -> VRight LTOD
+  EDATE _ -> VRight DATE
+  ELDATE _ -> VRight LDATE
+  EDT _ -> VRight DT
+  ELDT _ -> VRight LDT
   EArrayAgg _ -> VEither.fromLeft BadUseOfFunction
   EStructAgg _ -> VEither.fromLeft BadUseOfFunction
   where
@@ -541,6 +560,14 @@ inferType tenv env = \case
       | both isWChar ta tb = VRight BOOL
       | both isString ta tb = VRight BOOL
       | both isWString ta tb = VRight BOOL
+      | both isTime ta tb = VRight BOOL
+      | both isLTime ta tb = VRight BOOL
+      | both isTOD ta tb = VRight BOOL
+      | both isLTOD ta tb = VRight BOOL
+      | both isDate ta tb = VRight BOOL
+      | both isLDate ta tb = VRight BOOL
+      | both isDT ta tb = VRight BOOL
+      | both isLDT ta tb = VRight BOOL
       -- INT と REAL の混在は OK
       | (ta, tb) == (INT, REAL) || (ta, tb) == (REAL, INT) = VRight BOOL
       -- LREAL は同型のみ可：片側だけ LREAL は NG
@@ -556,6 +583,14 @@ inferType tenv env = \case
         isWChar = \case WCHAR -> True; _ -> False
         isString = \case STRING _ -> True; _ -> False
         isWString = \case WSTRING _ -> True; _ -> False
+        isTime = \case TIME -> True; _ -> False
+        isLTime = \case LTIME -> True; _ -> False
+        isTOD = \case TOD -> True; _ -> False
+        isLTOD = \case LTOD -> True; _ -> False
+        isDate = \case DATE -> True; _ -> False
+        isLDate = \case LDATE -> True; _ -> False
+        isDT = \case DT -> True; _ -> False
+        isLDT = \case LDT -> True; _ -> False
         both f a b = f a == f b
 
     -- 数値の2項演算

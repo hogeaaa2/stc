@@ -7,7 +7,9 @@
 {-# OPTIONS_GHC -Wno-incomplete-uni-patterns #-}
 
 import Control.Monad (forM_)
+import Data.List (find)
 import Data.Map.Strict qualified as M
+import Data.Maybe (isJust)
 import Data.Proxy (Proxy (..))
 import Data.Text (Text)
 import Data.Text qualified as T
@@ -1395,3 +1397,78 @@ main = hspec $ do
             \VAR a: ARRAY[0..2] OF INT; i: INT; x: INT; END_VAR\n\
             \x := a[i];\n"
       expectUnitPass src
+
+  describe "Date/Time (semantics)" $ do
+    -- ====== TIME ======
+    it "accepts assignment: TIME <- TIME literal" $ do
+      let s = "PROGRAM P\nVAR t: TIME; END_VAR\nt := T#1h2m3s400ms;\n"
+      expectUnitPass s
+
+    it "rejects assignment: TIME <- TOD literal" $ do
+      let s = "PROGRAM P\nVAR t: TIME; END_VAR\nt := TOD#12:00:00;\n"
+      expectUnitFail @TypeMismatch s
+
+    it "allows equality within TIME" $ do
+      let s = "PROGRAM P\nVAR t: TIME; END_VAR\nIF T#1s = T#1000ms THEN t := T#0s; END_IF\n"
+      expectUnitPass s
+
+    it "rejects equality TIME = INT" $ do
+      let s = "PROGRAM P\nVAR b: BOOL; END_VAR\nIF T#1s = 1 THEN b := TRUE; END_IF\n"
+      -- TypeMismatch' の actual 片が INT になるはず
+      expectUnitFailWithDetail @TypeMismatch' s (\(TypeMismatch' actual) -> actual == INT)
+
+    -- ====== TIME_OF_DAY / TOD ======
+    it "accepts assignment: TOD <- TOD literal" $ do
+      let s = "PROGRAM P\nVAR x: TOD; END_VAR\nx := TOD#23:59:59.999;\n"
+      expectUnitPass s
+
+    it "rejects assignment: TOD <- TIME literal" $ do
+      let s = "PROGRAM P\nVAR x: TOD; END_VAR\nx := T#1s;\n"
+      expectUnitFail @TypeMismatch s
+
+    it "allows equality within TOD" $ do
+      let s = "PROGRAM P\nVAR b: BOOL; END_VAR\nIF TOD#12:34:56 = TOD#12:34:56 THEN b := TRUE; END_IF\n"
+      expectUnitPass s
+
+    -- ====== DATE / D ======
+    it "accepts assignment: DATE <- DATE literal" $ do
+      let s = "PROGRAM P\nVAR d: DATE; END_VAR\nd := D#1970-01-01;\n"
+      expectUnitPass s
+
+    it "rejects assignment: DATE <- DT literal" $ do
+      let s = "PROGRAM P\nVAR d: DATE; END_VAR\nd := DT#1970-01-01-00:00:00;\n"
+      expectUnitFail @TypeMismatch s
+
+    it "allows equality within DATE" $ do
+      let s = "PROGRAM P\nVAR b: BOOL; END_VAR\nIF D#2025-11-03 = DATE#2025-11-03 THEN b := TRUE; END_IF\n"
+      expectUnitPass s
+
+    -- ====== DATE_AND_TIME / DT ======
+    it "accepts assignment: DT <- DT literal" $ do
+      let s = "PROGRAM P\nVAR dt: DT; END_VAR\ndt := DT#1999-12-31-23:59:59.999;\n"
+      expectUnitPass s
+
+    it "rejects assignment: DT <- DATE literal" $ do
+      let s = "PROGRAM P\nVAR dt: DT; END_VAR\ndt := D#1999-12-31;\n"
+      expectUnitFail @TypeMismatch s
+
+    it "allows equality within DT" $ do
+      let s = "PROGRAM P\nVAR b: BOOL; END_VAR\nIF DT#1999-12-31-23:59:59 = DATE_AND_TIME#1999-12-31-23:59:59 THEN b := TRUE; END_IF\n"
+      expectUnitPass s
+
+    -- ====== デフォルト初期化（中身までは縛らず、Just かどうかだけ確認） ======
+    it "fills default init for TIME/TOD/DATE/DT when missing" $ do
+      let s =
+            "PROGRAM P\n\
+            \VAR t: TIME; tod: TOD; d: DATE; dt: DT; END_VAR\n"
+      case parseProgram s of
+        Left e -> expectationFailure (show e)
+        Right p ->
+          case elaborateProgram p :: VEither AllErrs Program of
+            VLeft es -> expectationFailure ("elaboration failed: " <> show es)
+            VRight (Program _ (VarDecls vs) _) -> do
+              let lookupInit nm = varInit =<< find (\v -> locVal (varName v) == nm) vs
+              isJust (lookupInit "t") `shouldBe` True
+              isJust (lookupInit "tod") `shouldBe` True
+              isJust (lookupInit "d") `shouldBe` True
+              isJust (lookupInit "dt") `shouldBe` True

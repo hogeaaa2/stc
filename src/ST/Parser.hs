@@ -28,6 +28,7 @@ import Data.Functor (($>))
 import Data.List (isInfixOf)
 import qualified Data.List.NonEmpty as NE
 import Data.Maybe (fromMaybe, isJust, maybeToList)
+import Data.Scientific (Scientific)
 import Data.Set (Set)
 import qualified Data.Set as Set
 import Data.Text (Text)
@@ -66,6 +67,7 @@ import Text.Megaparsec.Char
     digitChar,
     space1,
     string,
+    string',
   )
 import qualified Text.Megaparsec.Char.Lexer as L
   ( decimal,
@@ -84,6 +86,233 @@ data DollarPolicy = DollarPolicy
   { allowDollarSingle :: Bool,
     allowDollarDouble :: Bool
   }
+
+----------------------------------
+-- public functions
+----------------------------------
+
+parseProgram :: Text -> Either (ParseErrorBundle Text Void) Program
+parseProgram = parse (pProgram <* eof) "<input>"
+
+parseUnit :: Text -> Either (ParseErrorBundle Text Void) Unit
+parseUnit = parse (sc *> pUnit <* eof) "<input>"
+
+identifier :: Parser Identifier
+identifier = withSpan $ lexeme $ do
+  first <- choice [l, usld]
+  rest <- many $ choice [ld, usld]
+  let result = T.append first (T.concat rest)
+   in if not $ Set.member (T.toUpper result) reserved
+        then pure result
+        else do
+          off <- getOffset
+          let item = Label (NE.fromList (T.unpack result))
+          registerParseError
+            ( TrivialError
+                off
+                (Just item)
+                (Set.singleton $ Label $ NE.fromList "non-reserved string")
+            )
+          pure ""
+  where
+    l :: Parser Text
+    l = T.singleton <$> satisfy isLetter
+
+    ld :: Parser Text
+    ld = T.singleton <$> satisfy isLetterDigit
+
+    usld :: Parser Text
+    usld = do
+      us <- char '_'
+      c <- satisfy isLetterDigit
+      pure $ T.cons us (T.singleton c)
+
+pUnit :: Parser Unit
+pUnit = do
+  tys <- many pTypeBlock
+  prg <- pProgram
+  pure (Unit (concat tys) [prg])
+
+pStmt :: Parser Statement
+pStmt = withRecovery recover pStmtCore
+  where
+    pStmtCore =
+      choice
+        [ pIf,
+          pWhile,
+          pRepeat,
+          pCase,
+          pFor,
+          pAssign,
+          pSkip
+        ]
+
+    recover err = do
+      registerParseError err
+      done <- atEnd
+      if done
+        then empty
+        else do
+          -- すでに同期トークン直前なら、ここでも止める（親の manyTill が拾う）
+          let syncHere =
+                void . lookAhead $
+                  choice $
+                    map
+                      symbol
+                      [ ";",
+                        "ELSIF",
+                        "ELSE",
+                        "END_IF",
+                        "END_WHILE",
+                        "UNTIL",
+                        "END_REPEAT",
+                        "END_CASE"
+                      ]
+          m <- observing syncHere
+          case m of
+            Right _ -> empty -- ここで止めて親に任せる
+            Left _ -> do
+              -- それ以外は同期点まで“進めてから”ダミーを返す
+              skipToStmtSync
+              pure (If (EBOOL True) [] [] [])
+
+pExpr :: Parser Expr
+pExpr = makeExprParser pTerm table
+  where
+    pTerm = pPrimaryE >>= pPostfixE
+    table =
+      [ -- precedence 9
+        [ prefix "-" ENeg,
+          prefix "+" id,
+          prefix "NOT" ENot
+        ],
+        -- Exponentiation (precedence 8) is defined in IEC61131-3
+        -- but not supported in CODESYS.
+        -- https://content.helpme-codesys.com/en/CODESYS%20Development%20System/_cds_st_expressions.html
+
+        -- precedence 7
+        [ binary "*" EMul,
+          binary "/" EDiv,
+          binary "MOD" EMod
+        ],
+        -- precedence 6
+        [ binary "+" EAdd,
+          binary "-" ESub
+        ],
+        -- precedence 5&4
+        [ comp "<=" ELe,
+          comp ">=" EGe,
+          comp "<>" ENe,
+          comp "<" ELt,
+          comp ">" EGt,
+          comp "=" EEq
+        ],
+        -- precedence 3
+        [binary "AND" EAnd],
+        -- precedence 2
+        [binary "XOR" EXor],
+        -- precedence 1
+        [binary "OR" EOr]
+      ]
+
+    binary, comp :: Text -> (Expr -> Expr -> Expr) -> Operator Parser Expr
+    binary name f = InfixL (f <$ symbol name)
+    comp name f = InfixN (f <$ symbol name)
+    -- exp name f = InfixR (f <$ symbol name)
+
+    prefix :: Text -> (Expr -> Expr) -> Operator Parser Expr
+    prefix name f = Prefix (f <$ symbol name)
+
+-- postfix :: Text -> (Expr -> Expr) -> Operator Parser Expr
+-- postfix name f = Postfix (f <$ symbol name)
+
+-- pLValue :: Parser LValue
+-- pLValue = do
+--   x <- identifier
+--   fs <- many (symbol "." *> identifier)
+--   pure (foldl LField (LVar x) fs)
+
+pTypeBlock :: Parser [TypeDecl]
+pTypeBlock = do
+  _ <- symbol "TYPE"
+  someTill pOneType (symbol "END_TYPE")
+  where
+    pOneType = do
+      nm <- identifier
+      _ <- symbol ":"
+      ty <- pSTType
+      _ <- symbol ";"
+      pure (TypeDecl nm ty)
+
+-- Var_Decl_Init
+pVariable :: Bool -> Parser Variable
+pVariable isConst = lexeme $ do
+  name <- identifier
+  _ <- colon
+  dt <- pSTType
+  vInit <- optional (assignOp *> lexeme pExpr)
+  _ <- semicolon
+  pure (Variable name dt vInit isConst)
+
+pInt :: Parser Int
+pInt = lexeme $ do
+  -- 先頭符号（オプション）
+  msign <- optional (char '+' <|> char '-')
+  mbBase <-
+    optional . try $
+      choice
+        [ 2 <$ string "2#",
+          8 <$ string "8#",
+          10 <$ string "10#",
+          16 <$ string "16#"
+        ]
+  n <- case mbBase of
+    -- 基数付き：CODESYS 準拠で先頭/末尾 '_' も許容。ただし "__" は不可。
+    Just b -> do
+      let isDigitB c
+            | b == 2 = c == '0' || c == '1'
+            | b == 8 = isOctDigit c
+            | b == 10 = isDigit c
+            | b == 16 = isHexDigit c
+            | otherwise = False
+      raw <- some (satisfy (\c -> isDigitB c || c == '_'))
+      -- 少なくとも1桁の“基数桁”を含む & "__" が無い
+      if any isDigitB raw && noDoubleUnders raw
+        then pure (readBaseInt b raw)
+        else fail "invalid based integer literal"
+    -- 10進：桁間 '_' のみ許容（先頭/末尾/連続不可）
+    Nothing -> do
+      read . stripUnders <$> decDigitsStrict
+  -- 符号を適用
+  pure $ case msign of
+    Just '-' -> negate n
+    _ -> n
+
+-- 10進 REAL リテラル（最小）： 1.0 / 0.5 / 12e-3 / 3. / 0E+5 など
+-- 仕様: 先頭に少なくとも1桁、(小数 or 指数) のどちらか必須
+pReal :: Parser Double
+pReal = lexeme $ do
+  -- 整数部：末尾 '_' も許容（直後に '.' が来る前提）
+  intPart <- decDigitsAllowTrailUnders
+  _ <- char '.'
+  -- 小数部：先頭 '_' も許容（直前が '.'）
+  fracPart <- decDigitsAllowLeadUnders
+
+  -- 指数部（任意）：桁間 '_' は許容、先頭/末尾 '_' は不可
+  mExp <- optional $ do
+    e <- oneOf ['e', 'E']
+    s <- optional (oneOf ['+', '-'])
+    d0 <- digitChar
+    ds <- many (digitChar <|> try (char '_' *> digitChar))
+    let digits = d0 : ds
+    pure (e : maybeToList s ++ stripUnders digits)
+
+  let numStr = stripUnders intPart ++ "." ++ stripUnders fracPart ++ maybe "" id mExp
+  pure (read numStr)
+
+----------------------------------
+-- private functions
+----------------------------------
 
 stringPolicy, wstringPolicy :: DollarPolicy
 stringPolicy = DollarPolicy {allowDollarSingle = True, allowDollarDouble = False} -- STRING
@@ -144,9 +373,6 @@ reserved =
       "LWORD"
     ]
 
-------------------
--- utils
-------------------
 withSpan :: Parser a -> Parser (Loc a)
 withSpan p = do
   s <- getSourcePos
@@ -280,36 +506,6 @@ isLetter c = isAsciiLower c || isAsciiUpper c
 isLetterDigit :: Char -> Bool
 isLetterDigit c = isLetter c || isDigit c
 
-identifier :: Parser Identifier
-identifier = withSpan $ lexeme $ do
-  first <- choice [l, usld]
-  rest <- many $ choice [ld, usld]
-  let result = T.append first (T.concat rest)
-   in if not $ Set.member (T.toUpper result) reserved
-        then pure result
-        else do
-          off <- getOffset
-          let item = Label (NE.fromList (T.unpack result))
-          registerParseError
-            ( TrivialError
-                off
-                (Just item)
-                (Set.singleton $ Label $ NE.fromList "non-reserved string")
-            )
-          pure ""
-  where
-    l :: Parser Text
-    l = T.singleton <$> satisfy isLetter
-
-    ld :: Parser Text
-    ld = T.singleton <$> satisfy isLetterDigit
-
-    usld :: Parser Text
-    usld = do
-      us <- char '_'
-      c <- satisfy isLetterDigit
-      pure $ T.cons us (T.singleton c)
-
 semicolon :: Parser Char
 semicolon = lexeme $ char ';'
 
@@ -328,39 +524,6 @@ brackets = between (symbol "[") (symbol "]")
 ------------------
 -- parser
 ------------------
-pInt :: Parser Int
-pInt = lexeme $ do
-  -- 先頭符号（オプション）
-  msign <- optional (char '+' <|> char '-')
-  mbBase <-
-    optional . try $
-      choice
-        [ 2 <$ string "2#",
-          8 <$ string "8#",
-          10 <$ string "10#",
-          16 <$ string "16#"
-        ]
-  n <- case mbBase of
-    -- 基数付き：CODESYS 準拠で先頭/末尾 '_' も許容。ただし "__" は不可。
-    Just b -> do
-      let isDigitB c
-            | b == 2 = c == '0' || c == '1'
-            | b == 8 = isOctDigit c
-            | b == 10 = isDigit c
-            | b == 16 = isHexDigit c
-            | otherwise = False
-      raw <- some (satisfy (\c -> isDigitB c || c == '_'))
-      -- 少なくとも1桁の“基数桁”を含む & "__" が無い
-      if any isDigitB raw && noDoubleUnders raw
-        then pure (readBaseInt b raw)
-        else fail "invalid based integer literal"
-    -- 10進：桁間 '_' のみ許容（先頭/末尾/連続不可）
-    Nothing -> do
-      read . stripUnders <$> decDigitsStrict
-  -- 符号を適用
-  pure $ case msign of
-    Just '-' -> negate n
-    _ -> n
 
 pBool :: Parser Bool
 pBool = (True <$ symbol "TRUE") <|> (False <$ symbol "FALSE")
@@ -444,6 +607,14 @@ pPrimaryE =
       parens pExpr,
       try pCharLit,
       try pWCharLit,
+      try pLDTLit,
+      try pDTLit,
+      try pLTODLit,
+      try pTODLit,
+      try pLDateLit,
+      try pDateLit,
+      try pLTimeLit,
+      try pTimeLit,
       pStringLit,
       pWStringLit,
       EBOOL <$> pBool,
@@ -488,84 +659,6 @@ pPostfixL = go
       is <- brackets (pExpr `sepBy1` symbol ",")
       pure (LIndex l'' is)
 
-pExpr :: Parser Expr
-pExpr = makeExprParser pTerm table
-  where
-    pTerm = pPrimaryE >>= pPostfixE
-    table =
-      [ -- precedence 9
-        [ prefix "-" ENeg,
-          prefix "+" id,
-          prefix "NOT" ENot
-        ],
-        -- Exponentiation (precedence 8) is defined in IEC61131-3
-        -- but not supported in CODESYS.
-        -- https://content.helpme-codesys.com/en/CODESYS%20Development%20System/_cds_st_expressions.html
-
-        -- precedence 7
-        [ binary "*" EMul,
-          binary "/" EDiv,
-          binary "MOD" EMod
-        ],
-        -- precedence 6
-        [ binary "+" EAdd,
-          binary "-" ESub
-        ],
-        -- precedence 5&4
-        [ comp "<=" ELe,
-          comp ">=" EGe,
-          comp "<>" ENe,
-          comp "<" ELt,
-          comp ">" EGt,
-          comp "=" EEq
-        ],
-        -- precedence 3
-        [binary "AND" EAnd],
-        -- precedence 2
-        [binary "XOR" EXor],
-        -- precedence 1
-        [binary "OR" EOr]
-      ]
-
-    binary, comp :: Text -> (Expr -> Expr -> Expr) -> Operator Parser Expr
-    binary name f = InfixL (f <$ symbol name)
-    comp name f = InfixN (f <$ symbol name)
-    -- exp name f = InfixR (f <$ symbol name)
-
-    prefix :: Text -> (Expr -> Expr) -> Operator Parser Expr
-    prefix name f = Prefix (f <$ symbol name)
-
--- postfix :: Text -> (Expr -> Expr) -> Operator Parser Expr
--- postfix name f = Postfix (f <$ symbol name)
-
--- pLValue :: Parser LValue
--- pLValue = do
---   x <- identifier
---   fs <- many (symbol "." *> identifier)
---   pure (foldl LField (LVar x) fs)
-
--- 10進 REAL リテラル（最小）： 1.0 / 0.5 / 12e-3 / 3. / 0E+5 など
--- 仕様: 先頭に少なくとも1桁、(小数 or 指数) のどちらか必須
-pReal :: Parser Double
-pReal = lexeme $ do
-  -- 整数部：末尾 '_' も許容（直後に '.' が来る前提）
-  intPart <- decDigitsAllowTrailUnders
-  _ <- char '.'
-  -- 小数部：先頭 '_' も許容（直前が '.'）
-  fracPart <- decDigitsAllowLeadUnders
-
-  -- 指数部（任意）：桁間 '_' は許容、先頭/末尾 '_' は不可
-  mExp <- optional $ do
-    e <- oneOf ['e', 'E']
-    s <- optional (oneOf ['+', '-'])
-    d0 <- digitChar
-    ds <- many (digitChar <|> try (char '_' *> digitChar))
-    let digits = d0 : ds
-    pure (e : maybeToList s ++ stripUnders digits)
-
-  let numStr = stripUnders intPart ++ "." ++ stripUnders fracPart ++ maybe "" id mExp
-  pure (read numStr)
-
 -- 構造体集成: (name := expr, ...)
 pStructAgg :: Parser Expr
 pStructAgg = lexeme . try $ do
@@ -585,24 +678,6 @@ pArrayAgg = lexeme $ do
   es <- pExpr `sepBy` symbol ","
   _ <- symbol "]"
   pure $ EArrayAgg es
-
-pUnit :: Parser Unit
-pUnit = do
-  tys <- many pTypeBlock
-  prg <- pProgram
-  pure (Unit (concat tys) [prg])
-
-pTypeBlock :: Parser [TypeDecl]
-pTypeBlock = do
-  _ <- symbol "TYPE"
-  someTill pOneType (symbol "END_TYPE")
-  where
-    pOneType = do
-      nm <- identifier
-      _ <- symbol ":"
-      ty <- pSTType
-      _ <- symbol ";"
-      pure (TypeDecl nm ty)
 
 pSTType :: Parser STType
 pSTType =
@@ -627,6 +702,14 @@ pSTType =
       LREAL <$ symbol "LREAL",
       CHAR <$ symbol "CHAR",
       WCHAR <$ symbol "WCHAR",
+      LDT <$ (try (string' "LDATE_AND_TIME") <|> string' "LDT"),
+      LTOD <$ (try (string' "LTIME_OF_DAY") <|> string' "LTOD"),
+      LTIME <$ string' "LTIME",
+      LDATE <$ string' "LDATE",
+      DT <$ (try (string' "DATE_AND_TIME") <|> string' "DT"),
+      TOD <$ (try (string' "TIME_OF_DAY") <|> string' "TOD"),
+      TIME <$ string' "TIME",
+      DATE <$ string' "DATE",
       pStringType,
       pWStringType,
       Named <$> identifier
@@ -700,59 +783,6 @@ pVarDecls = lexeme $ do
   isConst <- isJust <$> optional (symbol "CONSTANT")
   vs <- manyTill (pVariable isConst) (symbol "END_VAR")
   pure (VarDecls vs)
-
--- Var_Decl_Init
-pVariable :: Bool -> Parser Variable
-pVariable isConst = lexeme $ do
-  name <- identifier
-  _ <- colon
-  dt <- pSTType
-  vInit <- optional (assignOp *> lexeme pExpr)
-  _ <- semicolon
-  pure (Variable name dt vInit isConst)
-
-pStmt :: Parser Statement
-pStmt = withRecovery recover pStmtCore
-  where
-    pStmtCore =
-      choice
-        [ pIf,
-          pWhile,
-          pRepeat,
-          pCase,
-          pFor,
-          pAssign,
-          pSkip
-        ]
-
-    recover err = do
-      registerParseError err
-      done <- atEnd
-      if done
-        then empty
-        else do
-          -- すでに同期トークン直前なら、ここでも止める（親の manyTill が拾う）
-          let syncHere =
-                void . lookAhead $
-                  choice $
-                    map
-                      symbol
-                      [ ";",
-                        "ELSIF",
-                        "ELSE",
-                        "END_IF",
-                        "END_WHILE",
-                        "UNTIL",
-                        "END_REPEAT",
-                        "END_CASE"
-                      ]
-          m <- observing syncHere
-          case m of
-            Right _ -> empty -- ここで止めて親に任せる
-            Left _ -> do
-              -- それ以外は同期点まで“進めてから”ダミーを返す
-              skipToStmtSync
-              pure (If (EBOOL True) [] [] [])
 
 pSkip :: Parser Statement
 pSkip = semicolon $> Skip
@@ -930,8 +960,134 @@ pFor = do
 
   pure (For iv e0 e1 mby body)
 
-parseProgram :: Text -> Either (ParseErrorBundle Text Void) Program
-parseProgram = parse (pProgram <* eof) "<input>"
+-- 小数（例: "14" or "14.7"）。Scientific で返す
+pNumberSci :: Parser Scientific
+pNumberSci = lexeme $ do
+  intPart <- some digitChar
+  mFrac <- optional (char '.' *> some digitChar)
+  let txt = case mFrac of
+        Nothing -> intPart
+        Just f -> intPart <> "." <> f
+  case reads txt of
+    [(sci, "")] -> pure (sci :: Scientific)
+    _ -> fail "invalid number"
 
-parseUnit :: Text -> Either (ParseErrorBundle Text Void) Unit
-parseUnit = parse (sc *> pUnit <* eof) "<input>"
+-- 小数点以下ナノ秒を 0..999,999,999 へ丸めずに桁合わせ（切詰め/pad）
+-- 入力は "360_227_400" などアンダースコア入りでもOK
+pFracNanos :: Parser Int
+pFracNanos = do
+  _ <- char '.'
+  ds <- some (satisfy (\c -> isDigit c || c == '_')) -- sus
+  let raw = filter isDigit ds
+      take9 = take 9 raw
+      padded = take9 <> replicate (9 - length take9) '0'
+  pure (read (if null padded then "0" else padded))
+
+-- 単位 *順序大事*（ms/us/ns を先）
+pTimeUnit :: Parser Text
+pTimeUnit =
+  choice
+    [ string' "ms",
+      string' "us",
+      string' "ns",
+      string' "d",
+      string' "h",
+      string' "m",
+      string' "s"
+    ]
+
+-- Scientific × 単位 を 1 チャンクとして読む（"14.7s" など）
+pDurChunk :: Parser (Scientific, Text)
+pDurChunk = do
+  n <- pNumberSci
+  u <- pTimeUnit
+  pure (n, T.toLower u)
+
+toNS :: (Scientific, Text) -> Integer
+toNS (sci, u) =
+  let factor :: Integer
+      factor = case u of
+        "d" -> 86400 * 1000000000
+        "h" -> 3600 * 1000000000
+        "m" -> 60 * 1000000000
+        "s" -> 1000000000
+        "ms" -> 1000000
+        "us" -> 1000
+        "ns" -> 1
+        _ -> 0
+      rat = toRational sci
+   in round (rat * fromIntegral factor)
+
+-- T#... / TIME#... をパース
+pTimeLit :: Parser Expr
+pTimeLit = lexeme $ do
+  _ <- try (string' "TIME#") <|> string' "T#"
+  (dur, neg) <- pDurationSegments
+  pure $ ETIME (if neg then negate dur else dur)
+
+pDateLit :: Parser Expr
+pDateLit = lexeme $ do
+  _ <- try (string' "DATE#") <|> string' "D#"
+  EDATE <$> pDateYMD
+
+pTODLit :: Parser Expr
+pTODLit = lexeme $ do
+  _ <- try (string' "TIME_OF_DAY#") <|> string' "TOD#"
+  ETOD <$> pHMSWithFrac
+
+pDTLit :: Parser Expr
+pDTLit = lexeme $ do
+  _ <- try (string' "DATE_AND_TIME#") <|> string' "DT#"
+  d <- pDateYMD
+  _ <- char '-'
+  EDT . DateTime d <$> pHMSWithFrac
+
+pLTimeLit :: Parser Expr
+pLTimeLit = lexeme $ do
+  _ <- try (string' "LTIME#") <|> string' "LT#"
+  (dur, neg) <- pDurationSegments
+  pure $ ELTIME (if neg then negate dur else dur)
+
+pLDateLit :: Parser Expr
+pLDateLit = lexeme $ do
+  _ <- try (string' "LDATE#") <|> string' "LD#"
+  ELDATE <$> pDateYMD
+
+pLTODLit :: Parser Expr
+pLTODLit = lexeme $ do
+  _ <- try (string' "LTIME_OF_DAY#") <|> string' "LTOD#"
+  ELTOD <$> pHMSWithFrac
+
+pLDTLit :: Parser Expr
+pLDTLit = lexeme $ do
+  _ <- try (string' "LDATE_AND_TIME#") <|> string' "LDT#"
+  d <- pDateYMD
+  _ <- char '-'
+  ELDT . DateTime d <$> pHMSWithFrac
+
+pDurationSegments :: Parser (Integer, Bool)
+pDurationSegments = do
+  neg <- optional (char '-')
+  ch1 <- pDurChunk
+  rest <- many (optional (char '_') *> pDurChunk)
+  let total = sum (map toNS (ch1 : rest))
+  pure (total, isJust neg)
+
+pDateYMD :: Parser Date
+pDateYMD = do
+  y <- read <$> some digitChar
+  _ <- char '-'
+  m <- read <$> some digitChar
+  _ <- char '-'
+  d <- read <$> some digitChar
+  pure (Date y m d)
+
+pHMSWithFrac :: Parser TimeOfDay
+pHMSWithFrac = do
+  hh <- read <$> some digitChar
+  _ <- char ':'
+  mm <- read <$> some digitChar
+  _ <- char ':'
+  ss <- read <$> some digitChar
+  nanos <- fromMaybe 0 <$> optional pFracNanos
+  pure (TimeOfDay hh mm ss nanos)

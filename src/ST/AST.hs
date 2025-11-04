@@ -18,6 +18,9 @@ module ST.AST
     ArrRange (..),
     VarInfo (..),
     VarKind (..),
+    Date (..),
+    TimeOfDay (..),
+    DateTime (..),
   )
 where
 
@@ -106,6 +109,35 @@ data STType
   | Struct [(Identifier, STType)]
   | Array [ArrRange] STType
   | Enum [(Identifier, Maybe Expr)]
+  | TIME
+  | LTIME
+  | TOD
+  | LTOD
+  | DATE
+  | LDATE
+  | DT
+  | LDT
+  deriving (Eq, Show)
+
+data Date = Date
+  { dateYear :: Int,
+    dateMonth :: Int,
+    dateDay :: Int
+  }
+  deriving (Eq, Show)
+
+data TimeOfDay = TimeOfDay
+  { todHour :: Int,
+    todMin :: Int,
+    todSec :: Int,
+    todNano :: Int -- 0..999,999,999
+  }
+  deriving (Eq, Show)
+
+data DateTime = DateTime
+  { dtDate :: Date,
+    dtTime :: TimeOfDay
+  }
   deriving (Eq, Show)
 
 data Expr
@@ -139,6 +171,14 @@ data Expr
   | EEnum Identifier Identifier
   | EArrayAgg [Expr]
   | EStructAgg [(Identifier, Expr)]
+  | ETIME Integer
+  | ELTIME Integer
+  | ETOD TimeOfDay
+  | ELTOD TimeOfDay
+  | EDATE Date
+  | ELDATE Date
+  | EDT DateTime
+  | ELDT DateTime
   deriving (Eq, Show)
 
 data Variable = Variable
