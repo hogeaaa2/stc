@@ -1472,3 +1472,27 @@ main = hspec $ do
               isJust (lookupInit "tod") `shouldBe` True
               isJust (lookupInit "d") `shouldBe` True
               isJust (lookupInit "dt") `shouldBe` True
+
+  describe "Static index bounds checking (semantics) revisited" $ do
+    it "flags OOB on LHS when index is VAR CONSTANT" $ do
+      let src =
+            "PROGRAM P\n\
+            \VAR a: ARRAY[0..2] OF INT; END_VAR\n\
+            \VAR CONSTANT k: INT := -1; END_VAR\n\
+            \a[k] := 0;\n"
+      expectUnitFail @IndexOutOfBounds src
+
+    it "accepts LHS index when VAR CONSTANT is in range" $ do
+      let src =
+            "PROGRAM P\n\
+            \VAR a: ARRAY[0..2] OF INT; END_VAR\n\
+            \VAR CONSTANT k: INT := 2; END_VAR\n\
+            \a[k] := 0;\n"
+      expectUnitPass src
+
+    it "does not statically reject when index is non-constant" $ do
+      let src =
+            "PROGRAM P\n\
+            \VAR a: ARRAY[0..2] OF INT; k: INT; END_VAR\n\
+            \a[k] := 0;\n"
+      expectUnitPass src

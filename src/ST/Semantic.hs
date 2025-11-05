@@ -250,18 +250,17 @@ numericLiteralValue = \case
   _ -> Nothing
 
 -- 定数「設計子」を整数に評価（リテラル or VAR CONSTANT）
--- constIntValue :: TypeEnv -> Env -> Expr -> Maybe Integer
--- constIntValue tenv env e =
---   -- まずは純リテラル（負号付き含む）ならそれを使う
---   case numericLiteralValue e of
---     Just n -> Just n
---     Nothing -> case e of
---       -- VAR CONSTANT k のときは初期値に遡って再帰評価
---       EVar i -> case M.lookup (locVal i) env of
---         Just (_ty, True, Just initE) -> constIntValue tenv env initE
---         _ -> Nothing
---       -- それ以外はここでは扱わない
---       _ -> Nothing
+constIntValue :: TypeEnv -> Env -> Expr -> Maybe Integer
+constIntValue _tenv env = go
+  where
+    go (EINT n) = Just (fromIntegral n)
+    go (ENeg e) = negate <$> go e
+    go (EVar i) = do
+      vi <- M.lookup (locVal i) env
+      guard (viKind vi == VKConstant)
+      initE <- viInit vi
+      go initE
+    go _ = Nothing
 
 -- LValue の「根」変数名（診断メッセージ用）
 lvalueRootName :: LValue -> Text
@@ -509,14 +508,12 @@ inferType tenv env = \case
             VEither.fromLeft $
               TypeMismatch' ti
           -- 定数なら静的境界チェック
-          case constIntValue ie of
+          case constIntValue tenv env ie of
             Just n ->
               unless (fromIntegral lo <= n && n <= fromIntegral hi) $
                 VEither.fromLeft $
                   IndexOutOfBounds
-                    ( lvalueRootName
-                        (LIndex (LVar (toIdent "<expr>")) [ie])
-                    )
+                    (lvalueRootName (LIndex (LVar (toIdent "<expr>")) [ie]))
                     (spanOfExpr ie)
                     n
                     lo
@@ -657,18 +654,6 @@ inferType tenv env = \case
         _ | isBitString ta && ta == tb -> VRight ta
         _ -> VEither.fromLeft $ TypeMismatch' tb0
 
-    constIntValue e =
-      case numericLiteralValue e of
-        Just n -> Just n
-        Nothing -> case e of
-          EVar i -> do
-            vi <- M.lookup (locVal i) env
-            guard (viKind vi == VKConstant)
-            initE <- viInit vi
-            numericLiteralValue initE
-          ENeg e' -> negate <$> constIntValue e'
-          _ -> Nothing
-
 -- 左辺の“ベース変数”を取り出す（const/存在チェック用）
 baseIdent :: LValue -> Identifier
 baseIdent = \case
@@ -729,12 +714,12 @@ lvalueType tenv env ty = \case
           unless (ti == INT || isIntOrBits ti) $
             VEither.fromLeft $
               TypeMismatch' ti
-          case numericLiteralValue ie of
+          case constIntValue tenv env ie of
             Just n ->
               unless (fromIntegral lo <= n && n <= fromIntegral hi) $
                 VEither.fromLeft $
                   IndexOutOfBounds
-                    (lvalueRootName $ LIndex base idxs)
+                    (lvalueRootName (LIndex (LVar (toIdent "<expr>")) [ie]))
                     (spanOfExpr ie)
                     n
                     lo
