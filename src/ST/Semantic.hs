@@ -116,7 +116,7 @@ data OutOfRange = OutOfRange VariableName STType Integer Span deriving (Eq, Show
 
 data TooManyAggElems = TooManyAggElems VariableName Span ExpectedElems ActualElems deriving (Eq, Show)
 
-data IndexOutOfBounds = IndexOutOfBounds VariableName Span Integer RangeFrom RangeTo deriving (Eq, Show)
+data IndexOutOfBounds = IndexOutOfBounds VariableName Span Int RangeFrom RangeTo deriving (Eq, Show)
 
 data BadUseOfFunction = BadUseOfFunction deriving (Eq, Show)
 
@@ -250,17 +250,10 @@ numericLiteralValue = \case
   _ -> Nothing
 
 -- 定数「設計子」を整数に評価（リテラル or VAR CONSTANT）
-constIntValue :: TypeEnv -> Env -> Expr -> Maybe Integer
-constIntValue _tenv env = go
-  where
-    go (EINT n) = Just (fromIntegral n)
-    go (ENeg e) = negate <$> go e
-    go (EVar i) = do
-      vi <- M.lookup (locVal i) env
-      guard (viKind vi == VKConstant)
-      initE <- viInit vi
-      go initE
-    go _ = Nothing
+constIntValue :: TypeEnv -> Env -> Expr -> Maybe Int
+constIntValue tenv env e = case evalConstExpr tenv env e of
+  Just (CVInt n) -> Just n
+  _ -> Nothing
 
 -- LValue の「根」変数名（診断メッセージ用）
 lvalueRootName :: LValue -> Text
@@ -510,7 +503,7 @@ inferType tenv env = \case
           -- 定数なら静的境界チェック
           case constIntValue tenv env ie of
             Just n ->
-              unless (fromIntegral lo <= n && n <= fromIntegral hi) $
+              unless (lo <= n && n <= hi) $
                 VEither.fromLeft $
                   IndexOutOfBounds
                     (lvalueRootName (LIndex (LVar (toIdent "<expr>")) [ie]))
@@ -716,7 +709,7 @@ lvalueType tenv env ty = \case
               TypeMismatch' ti
           case constIntValue tenv env ie of
             Just n ->
-              unless (fromIntegral lo <= n && n <= fromIntegral hi) $
+              unless (lo <= n && n <= hi) $
                 VEither.fromLeft $
                   IndexOutOfBounds
                     (lvalueRootName (LIndex (LVar (toIdent "<expr>")) [ie]))
@@ -1626,3 +1619,37 @@ nominalEq tenv a b =
 --       case M.lookup n m of
 --         Just (_, _, prev) -> Left [DuplicateVar n prev sp]
 --         Nothing -> VRight (M.insert n (varType v, varConst v, sp) m)
+
+evalConstExpr :: TypeEnv -> Env -> Expr -> Maybe ConstVal
+evalConstExpr tenv env = go
+  where
+    go = \case
+      -- 数値（符号も含む）
+      EINT n -> Just (CVInt n)
+      ENeg e -> do CVInt n <- go e; Just (CVInt (negate n))
+
+      -- 論理/文字/文字列
+      EBOOL b -> Just (CVBool b)
+      ECHAR c -> Just (CVChar c)
+      EWCHAR c -> Just (CVWChar c)
+      ESTRING t -> Just (CVString t)
+      EWSTRING t -> Just (CVWString t)
+      -- 時刻/日付
+      ETIME dur -> Just (CVTime dur)
+      ETOD tod -> Just (CVTOD tod)
+      EDATE d -> Just (CVDate d)
+      EDT dt -> Just (CVDT dt)
+      -- 列挙 Type.Ctor
+      EField (EVar ty) ctor ->
+        case resolveType tenv (Named ty) :: VEither [TypeCycle, UnknownType] STType of
+          VRight (Enum ctors)
+            | any ((== locVal ctor) . locVal . fst) ctors ->
+                Just (CVEnum (locVal ty) (locVal ctor))
+          _ -> Nothing
+      -- VAR CONSTANT の伝播
+      EVar i -> do
+        vi <- M.lookup (locVal i) env
+        guard (viKind vi == VKConstant)
+        initE <- viInit vi
+        go initE
+      _ -> Nothing

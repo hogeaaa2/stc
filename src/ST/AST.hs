@@ -21,6 +21,7 @@ module ST.AST
     Date (..),
     TimeOfDay (..),
     DateTime (..),
+    ConstVal (..),
   )
 where
 
@@ -179,6 +180,21 @@ data Expr
   | ELDATE Date
   | EDT DateTime
   | ELDT DateTime
+  deriving (Eq, Show)
+
+data ConstVal
+  = CVInt Int
+  | CVBool Bool
+  | CVChar Char
+  | CVWChar Char
+  | CVString Text
+  | CVWString Text
+  | -- 時刻/日付系（まずは“比較やOOBに使える形”だけを保持）
+    CVTime Integer -- TIME/ LTIME（ns 総量）
+  | CVTOD TimeOfDay -- TOD/LTOD（00:00:00 からの ns）
+  | CVDate Date -- DATE/LDATE（year,month,day）
+  | CVDT DateTime -- DT/LDT（epoch 基準のns…とりあえずns格納）
+  | CVEnum Text Text -- 列挙（型名, 構成子名）
   deriving (Eq, Show)
 
 data Variable = Variable
