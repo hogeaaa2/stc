@@ -9,7 +9,7 @@
 import Control.Monad (forM_)
 import Data.List (find)
 import Data.Map.Strict qualified as M
-import Data.Maybe (isJust)
+import Data.Maybe (isJust, isNothing)
 import Data.Proxy (Proxy (..))
 import Data.Text (Text)
 import Data.Text qualified as T
@@ -44,7 +44,13 @@ type AllErrs =
      UnknownEnumMember,
      UnknownStructMember,
      UnknownType,
-     UnknownVar
+     UnknownVar,
+     UnknownFunction,
+     BadArgCount,
+     ArgTypeMismatch,
+     UnknownArgName,
+     DuplicateArgName,
+     PositionalAfterNamed
    ]
 
 expectParsed :: Text -> (Program -> Expectation) -> Expectation
@@ -132,6 +138,45 @@ expectUnitFailWithDetail src pred' =
     Right u ->
       let v :: VEither AllErrs Unit
           v = elaborateUnit u
+       in shouldFailWithDetail @err v pred'
+
+-- FunEnv / elaborateUnitWithFuns を前提にした Unit 用ヘルパ
+-- （ST.Semantic から FunEnv, FunSig, elaborateUnitWithFuns を import 済み想定）
+
+-- 成功を期待（関数シグネチャ付き）
+expectUnitPassWithFuns :: FunEnv -> Text -> Expectation
+expectUnitPassWithFuns funs src =
+  case parseUnit src of
+    Left e -> expectationFailure (show e)
+    Right u ->
+      let v :: VEither AllErrs Unit
+          v = elaborateUnitWithFuns funs u
+       in shouldSucceedV v
+
+-- 失敗を期待（型だけ指定、詳細は見ない）
+expectUnitFailWithFuns ::
+  forall err.
+  (err :| AllErrs, Typeable err) =>
+  FunEnv -> Text -> Expectation
+expectUnitFailWithFuns funs src =
+  case parseUnit src of
+    Left e -> expectationFailure (show e)
+    Right u ->
+      let v :: VEither AllErrs Unit
+          v = elaborateUnitWithFuns funs u
+       in shouldFail @err v
+
+-- 失敗を期待（この型で、かつ中身も predicate でチェック）
+expectUnitFailWithDetailWithFuns ::
+  forall err.
+  (err :| AllErrs, Typeable err) =>
+  FunEnv -> Text -> (err -> Bool) -> Expectation
+expectUnitFailWithDetailWithFuns funs src pred' =
+  case parseUnit src of
+    Left e -> expectationFailure (show e)
+    Right u ->
+      let v :: VEither AllErrs Unit
+          v = elaborateUnitWithFuns funs u
        in shouldFailWithDetail @err v pred'
 
 main :: IO ()
@@ -1496,3 +1541,87 @@ main = hspec $ do
             \VAR a: ARRAY[0..2] OF INT; k: INT; END_VAR\n\
             \a[k] := 0;\n"
       expectUnitPass src
+
+  xdescribe "Function calls (semantics) with injected signatures" $ do
+    let base = "PROGRAM P\nVAR x: INT; y: INT; b: BOOL; END_VAR\n"
+
+        funsSimple :: FunEnv
+        funsSimple =
+          M.fromList
+            [ ("ADD", FunSig "ADD" [("x", INT), ("y", INT)] INT),
+              ("SUB", FunSig "SUB" [("x", INT), ("y", INT)] INT),
+              ("NOP", FunSig "NOP" [] INT)
+            ]
+
+        funsReal :: FunEnv
+        funsReal =
+          M.fromList
+            [ ("MIX", FunSig "MIX" [("a", INT), ("b", REAL)] REAL)
+            ]
+        -- 成功ケース
+        ok =
+          [ "x := ADD(1, 2);",
+            "x := SUB(5, 2);",
+            "x := ADD(y := 2, x := 1);", -- 名前付き順不同
+            "x := ADD(1, y := 2);", -- 位置→名前付きはOK
+            "x := ADD(SUB(3,1), 2);", -- ネスト
+            "x := NOP();" -- 引数なし
+          ]
+    forM_ ok $ \s ->
+      it ("accepts: " <> T.unpack s) $
+        expectUnitPassWithFuns funsSimple (base <> s)
+
+    -- 未知関数
+    it "rejects unknown function" $
+      expectUnitFailWithFuns @UnknownFunction M.empty (base <> "x := ADD(1);\n")
+
+    -- 引数個数エラー
+    it "rejects bad arg count (too few)" $
+      expectUnitFailWithDetailWithFuns @BadArgCount funsSimple (base <> "x := ADD(1);\n") $
+        \(BadArgCount fname _exp _act _sp) -> fname == "ADD"
+
+    it "rejects bad arg count (too many)" $
+      expectUnitFailWithFuns @BadArgCount funsSimple (base <> "x := ADD(1,2,3);\n")
+
+    -- 引数型不一致（位置）
+    it "rejects arg type mismatch (pos #1 expected INT got BOOL)" $
+      expectUnitFailWithDetailWithFuns @ArgTypeMismatch funsSimple (base <> "x := ADD(TRUE, 1);\n") $
+        \(ArgTypeMismatch fname mbName pos expTy actTy _sp) ->
+          fname == "ADD" && isNothing mbName && pos == 1 && expTy == INT && actTy == BOOL
+
+    -- 引数型不一致（名前付き）
+    it "rejects arg type mismatch (named y expected INT got BOOL)" $
+      expectUnitFailWithDetailWithFuns @ArgTypeMismatch funsSimple (base <> "x := ADD(x := 1, y := TRUE);\n") $
+        \(ArgTypeMismatch fname mbName _pos expTy actTy _sp) ->
+          fname == "ADD" && mbName == Just "y" && expTy == INT && actTy == BOOL
+
+    -- 未知引数名
+    it "rejects unknown named arg" $
+      expectUnitFailWithDetailWithFuns @UnknownArgName funsSimple (base <> "x := ADD(z := 1, y := 2);\n") $
+        \(UnknownArgName fname arg _sp) -> fname == "ADD" && arg == "z"
+
+    -- 重複引数名
+    it "rejects duplicate named arg" $
+      expectUnitFailWithDetailWithFuns @DuplicateArgName funsSimple (base <> "x := ADD(x := 1, x := 2);\n") $
+        \(DuplicateArgName fname arg _sp) -> fname == "ADD" && arg == "x"
+
+    -- 名前付きの後に位置引数（順序違反）
+    it "rejects positional arg after a named arg" $
+      expectUnitFailWithFuns @PositionalAfterNamed funsSimple (base <> "x := ADD(x := 1, 2);\n")
+
+    -- 返り値と代入先の不一致
+    it "rejects assigning INT-return to BOOL" $
+      expectUnitFailWithDetailWithFuns @TypeMismatch funsSimple (base <> "b := ADD(1,2);\n") $
+        \(TypeMismatch vname _ expected actual) ->
+          vname == "b" && expected == BOOL && actual == INT
+
+    -- 異なる FunEnv の例（REAL 返却）
+    it "propagates callee's return type from custom FunEnv" $ do
+      let src = "PROGRAM P\nVAR r: REAL; END_VAR\nr := MIX(1, 2.0);\n"
+      expectUnitPassWithFuns funsReal src
+
+    it "mismatch with custom FunEnv (REAL -> INT assign)" $ do
+      let src = "PROGRAM P\nVAR x: INT; END_VAR\nx := MIX(1, 2.0);\n"
+      expectUnitFailWithDetailWithFuns @TypeMismatch funsReal src $
+        \(TypeMismatch vname _ expected actual) ->
+          vname == "x" && expected == INT && actual == REAL

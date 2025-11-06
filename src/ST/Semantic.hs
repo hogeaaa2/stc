@@ -8,6 +8,8 @@
 module ST.Semantic
   ( elaborateProgram,
     elaborateUnit,
+    elaborateUnitWithFuns,
+    nominalEq,
     DuplicateVar (..),
     UnknownVar (..),
     AssignToConst (..),
@@ -31,7 +33,13 @@ module ST.Semantic
     TooManyAggElems (..),
     IndexOutOfBounds (..),
     BadUseOfFunction (..),
-    nominalEq,
+    FunEnv,
+    UnknownFunction (..),
+    BadArgCount (..),
+    ArgTypeMismatch (..),
+    UnknownArgName (..),
+    DuplicateArgName (..),
+    PositionalAfterNamed (..),
   )
 where
 
@@ -52,6 +60,8 @@ type Env = M.Map Text VarInfo
 
 type TypeEnv = M.Map Text STType
 
+type FunEnv = M.Map Text FunSig
+
 type ExpectedSTType = STType
 
 type ActualSTType = STType
@@ -64,6 +74,10 @@ type EnumName = Text
 
 type TypeName = Text
 
+type FunctionName = Text
+
+type ArgName = Text
+
 type MemberName = Text
 
 type RangeFrom = Int
@@ -73,6 +87,8 @@ type RangeTo = Int
 type ExpectedElems = Int
 
 type ActualElems = Int
+
+type ArgPos = Int
 
 data DuplicateVar = DuplicateVar VariableName Span deriving (Eq, Show)
 
@@ -120,30 +136,175 @@ data IndexOutOfBounds = IndexOutOfBounds VariableName Span Int RangeFrom RangeTo
 
 data BadUseOfFunction = BadUseOfFunction deriving (Eq, Show)
 
--- data SemantDiag
---   = DuplicateVar {dName :: Text, dPrev :: Span, dHere :: Span}
---   | UnknownVar {dName :: Text, dWhere :: Span}
---   | AssignToConst {dName :: Text, dWhere :: Span}
---   | TypeMismatch {dName :: Text, dWhere :: Span, expected :: STType, actual :: STType}
---   | MissingInitializer {dName :: Text, dWhere :: Span}
---   | OpTypeMismatch {op :: Text, expected :: STType, actual :: STType}
---   | UnknownType {tName :: Text, tWhere :: Span}
---   | TypeCycle {tName :: Text, tWhere :: Span}
---   | NotAStruct {sWhere :: Span, actual :: STType}
---   | UnknownField {fName :: Text, fWhere :: Span, baseType :: STType}
---   | NotAnArray {dWhere :: Span, actual :: STType}
---   | BadIndexCount {dWhere :: Span, expectedN :: Int, actualN :: Int}
---   | IndexNotInt {dWhere :: Span, actual :: STType}
---   | AssignToLoopVar {dName :: Text, dWhere :: Span}
---   | UnknownEnumValue {tName :: Text, eName :: Text, dWhere :: Span}
---   | NotAnEnum {tName :: Text, tWhere :: Span, actual :: STType}
---   | InvalidCaseRange {low :: Int, high :: Int}
---   | OverlappingCase
---   | NonConstantExpr {dWhere :: Span}
---   | OutOfRange {dName :: Text, dWhere :: Span, target :: STType, value :: Integer}
---   | TooManyAggElems {dName :: Text, dWhere :: Span, expectedElems :: Int, actualElems :: Int}
---   | IndexOutOfBounds {dName :: Text, dWhere :: Span, index :: Integer, lowb :: Integer, highb :: Integer}
---   deriving (Eq, Show)
+data UnknownFunction = UnknownFunction FunctionName Span deriving (Eq, Show)
+
+data BadArgCount = BadArgCount FunctionName Span ExpectedElems ActualElems deriving (Eq, Show)
+
+-- ArgPos は 1 始まりの実引数位置
+data ArgTypeMismatch = ArgTypeMismatch FunctionName (Maybe ArgName) ArgPos ExpectedSTType ActualSTType Span deriving (Eq, Show)
+
+data UnknownArgName = UnknownArgName FunctionName ArgName Span deriving (Eq, Show) -- 関数名, 未知の引数名
+
+data DuplicateArgName = DuplicateArgName FunctionName ArgName Span deriving (Eq, Show) -- 重複引数名
+
+data PositionalAfterNamed = PositionalAfterNamed Text Span deriving (Eq, Show) -- 名前付きの後に位置引数が現れた
+
+elaborateUnitWithFuns ::
+  ( DuplicateVar :| e,
+    TypeMismatch :| e,
+    TypeMismatch' :| e,
+    MissingInitializer :| e,
+    AssignToLoopVar :| e,
+    InvalidCaseRange :| e,
+    OverlappingCase :| e,
+    OutOfRange :| e,
+    UnknownStructMember :| e,
+    NotAStruct :| e,
+    TooManyAggElems :| e,
+    BadUseOfFunction :| e,
+    TypeCycle :| e,
+    UnknownType :| e,
+    UnknownEnumMember :| e,
+    NotAnEnum :| e,
+    IndexOutOfBounds :| e,
+    NotAnArray :| e,
+    UnknownVar :| e,
+    AssignToConst :| e,
+    BadIndexCount :| e,
+    NonConstantExpr :| e
+  ) =>
+  FunEnv -> Unit -> VEither e Unit
+elaborateUnitWithFuns = undefined
+
+elaborateProgram ::
+  ( DuplicateVar :| e,
+    TypeMismatch :| e,
+    TypeMismatch' :| e,
+    MissingInitializer :| e,
+    AssignToLoopVar :| e,
+    InvalidCaseRange :| e,
+    OverlappingCase :| e,
+    OutOfRange :| e,
+    UnknownStructMember :| e,
+    NotAStruct :| e,
+    TooManyAggElems :| e,
+    BadUseOfFunction :| e,
+    TypeCycle :| e,
+    UnknownType :| e,
+    UnknownEnumMember :| e,
+    NotAnEnum :| e,
+    IndexOutOfBounds :| e,
+    NotAnArray :| e,
+    UnknownVar :| e,
+    AssignToConst :| e,
+    BadIndexCount :| e,
+    NonConstantExpr :| e
+  ) =>
+  Program ->
+  VEither e Program
+elaborateProgram = elaborateProgramWithTypes M.empty
+
+-- TypeEnv あり版
+elaborateProgramWithTypes ::
+  ( DuplicateVar :| e,
+    TypeMismatch :| e,
+    TypeMismatch' :| e,
+    MissingInitializer :| e,
+    AssignToLoopVar :| e,
+    InvalidCaseRange :| e,
+    OverlappingCase :| e,
+    OutOfRange :| e,
+    UnknownStructMember :| e,
+    NotAStruct :| e,
+    TooManyAggElems :| e,
+    BadUseOfFunction :| e,
+    TypeCycle :| e,
+    UnknownType :| e,
+    UnknownEnumMember :| e,
+    NotAnEnum :| e,
+    IndexOutOfBounds :| e,
+    NotAnArray :| e,
+    UnknownVar :| e,
+    AssignToConst :| e,
+    BadIndexCount :| e,
+    NonConstantExpr :| e
+  ) =>
+  TypeEnv ->
+  Program ->
+  VEither e Program
+elaborateProgramWithTypes tenv (Program name (VarDecls vs) body) = do
+  -- 変数環境: 型は解決済みにして保持
+  env <- foldl insertVar (VRight M.empty) vs
+  -- 既定初期値の付与・初期化式の型チェック
+  vs' <- traverse (elabVar tenv env) vs
+  -- 本体の文
+  mapM_ (checkStmt tenv env) body
+  pure (Program name (VarDecls vs') body)
+  where
+    insertVar acc v = do
+      m <- acc
+      let n = locVal (varName v)
+          sp = locSpan (varName v)
+      case M.lookup n m of
+        Just _ -> VEither.fromLeft $ DuplicateVar n sp
+        Nothing -> do
+          -- ここでは resolveVarTypes 済みの varType を尊重：
+          --   列挙なら Named のまま、その他は解決後が入っている
+          VRight
+            ( M.insert
+                n
+                VarInfo
+                  { viType = varType v,
+                    viSpan = locSpan (varName v),
+                    viKind = if varConst v then VKConstant else VKLocal,
+                    viInit = varInit v
+                  }
+                m
+            )
+
+elaborateUnit ::
+  ( DuplicateVar :| e,
+    TypeMismatch :| e,
+    TypeMismatch' :| e,
+    MissingInitializer :| e,
+    AssignToLoopVar :| e,
+    InvalidCaseRange :| e,
+    OverlappingCase :| e,
+    OutOfRange :| e,
+    UnknownStructMember :| e,
+    NotAStruct :| e,
+    TooManyAggElems :| e,
+    BadUseOfFunction :| e,
+    TypeCycle :| e,
+    UnknownType :| e,
+    UnknownEnumMember :| e,
+    NotAnEnum :| e,
+    IndexOutOfBounds :| e,
+    NotAnArray :| e,
+    UnknownVar :| e,
+    AssignToConst :| e,
+    BadIndexCount :| e,
+    NonConstantExpr :| e
+  ) =>
+  Unit ->
+  VEither e Unit
+elaborateUnit (Unit tys progs) = do
+  -- 1) TYPE ブロックの本体を解決（別名をたどる・循環検出など）
+  let tenv0 = typeEnvOf tys
+  tys' <- traverse (\(TypeDecl n t) -> TypeDecl n <$> resolveType tenv0 t) tys
+  -- 2) 解決後の TYPE から、解決済みテーブルを作り直す
+  let tenv = typeEnvOf tys'
+  -- 3) 各 Program の VAR の型を解決して書き戻し
+  progsResolved <-
+    traverse
+      ( \(Program n vds b) -> do
+          vds' <- resolveVarTypes tenv vds
+          pure (Program n vds' b)
+      )
+      progs
+  -- 4) 解決済み TypeEnv を渡して elaboration（既定初期値付与・型チェック）
+  progs' <- traverse (elaborateProgramWithTypes tenv) progsResolved
+  pure (Unit tys' progs')
 
 toIdent :: Text -> Identifier
 toIdent txt =
@@ -1430,136 +1591,6 @@ resolveVarTypes tenv (VarDecls vs) = do
                 varInit = Just (EField (EVar tyId) (fst ctor0))
               }
         _ -> pure v {varType = maybe tyResolved Named keepNamedEnum}
-
-elaborateProgram ::
-  ( DuplicateVar :| e,
-    TypeMismatch :| e,
-    TypeMismatch' :| e,
-    MissingInitializer :| e,
-    AssignToLoopVar :| e,
-    InvalidCaseRange :| e,
-    OverlappingCase :| e,
-    OutOfRange :| e,
-    UnknownStructMember :| e,
-    NotAStruct :| e,
-    TooManyAggElems :| e,
-    BadUseOfFunction :| e,
-    TypeCycle :| e,
-    UnknownType :| e,
-    UnknownEnumMember :| e,
-    NotAnEnum :| e,
-    IndexOutOfBounds :| e,
-    NotAnArray :| e,
-    UnknownVar :| e,
-    AssignToConst :| e,
-    BadIndexCount :| e,
-    NonConstantExpr :| e
-  ) =>
-  Program ->
-  VEither e Program
-elaborateProgram = elaborateProgramWithTypes M.empty
-
--- TypeEnv あり版
-elaborateProgramWithTypes ::
-  ( DuplicateVar :| e,
-    TypeMismatch :| e,
-    TypeMismatch' :| e,
-    MissingInitializer :| e,
-    AssignToLoopVar :| e,
-    InvalidCaseRange :| e,
-    OverlappingCase :| e,
-    OutOfRange :| e,
-    UnknownStructMember :| e,
-    NotAStruct :| e,
-    TooManyAggElems :| e,
-    BadUseOfFunction :| e,
-    TypeCycle :| e,
-    UnknownType :| e,
-    UnknownEnumMember :| e,
-    NotAnEnum :| e,
-    IndexOutOfBounds :| e,
-    NotAnArray :| e,
-    UnknownVar :| e,
-    AssignToConst :| e,
-    BadIndexCount :| e,
-    NonConstantExpr :| e
-  ) =>
-  TypeEnv ->
-  Program ->
-  VEither e Program
-elaborateProgramWithTypes tenv (Program name (VarDecls vs) body) = do
-  -- 変数環境: 型は解決済みにして保持
-  env <- foldl insertVar (VRight M.empty) vs
-  -- 既定初期値の付与・初期化式の型チェック
-  vs' <- traverse (elabVar tenv env) vs
-  -- 本体の文
-  mapM_ (checkStmt tenv env) body
-  pure (Program name (VarDecls vs') body)
-  where
-    insertVar acc v = do
-      m <- acc
-      let n = locVal (varName v)
-          sp = locSpan (varName v)
-      case M.lookup n m of
-        Just _ -> VEither.fromLeft $ DuplicateVar n sp
-        Nothing -> do
-          -- ここでは resolveVarTypes 済みの varType を尊重：
-          --   列挙なら Named のまま、その他は解決後が入っている
-          VRight
-            ( M.insert
-                n
-                VarInfo
-                  { viType = varType v,
-                    viSpan = locSpan (varName v),
-                    viKind = if varConst v then VKConstant else VKLocal,
-                    viInit = varInit v
-                  }
-                m
-            )
-
-elaborateUnit ::
-  ( DuplicateVar :| e,
-    TypeMismatch :| e,
-    TypeMismatch' :| e,
-    MissingInitializer :| e,
-    AssignToLoopVar :| e,
-    InvalidCaseRange :| e,
-    OverlappingCase :| e,
-    OutOfRange :| e,
-    UnknownStructMember :| e,
-    NotAStruct :| e,
-    TooManyAggElems :| e,
-    BadUseOfFunction :| e,
-    TypeCycle :| e,
-    UnknownType :| e,
-    UnknownEnumMember :| e,
-    NotAnEnum :| e,
-    IndexOutOfBounds :| e,
-    NotAnArray :| e,
-    UnknownVar :| e,
-    AssignToConst :| e,
-    BadIndexCount :| e,
-    NonConstantExpr :| e
-  ) =>
-  Unit ->
-  VEither e Unit
-elaborateUnit (Unit tys progs) = do
-  -- 1) TYPE ブロックの本体を解決（別名をたどる・循環検出など）
-  let tenv0 = typeEnvOf tys
-  tys' <- traverse (\(TypeDecl n t) -> TypeDecl n <$> resolveType tenv0 t) tys
-  -- 2) 解決後の TYPE から、解決済みテーブルを作り直す
-  let tenv = typeEnvOf tys'
-  -- 3) 各 Program の VAR の型を解決して書き戻し
-  progsResolved <-
-    traverse
-      ( \(Program n vds b) -> do
-          vds' <- resolveVarTypes tenv vds
-          pure (Program n vds' b)
-      )
-      progs
-  -- 4) 解決済み TypeEnv を渡して elaboration（既定初期値付与・型チェック）
-  progs' <- traverse (elaborateProgramWithTypes tenv) progsResolved
-  pure (Unit tys' progs')
 
 -- actTy が expTy と互換か？
 nominalEq :: TypeEnv -> STType -> STType -> Bool

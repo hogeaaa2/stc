@@ -884,3 +884,24 @@ main = hspec $ do
     forM_ supported2 $ \(why, decl, stmt) ->
       it ("parses: " <> T.unpack why <> " - " <> T.unpack stmt) $ do
         expectRight (parseProgram (mk decl stmt)) (const $ pure ())
+
+  describe "Function calls (parsing)" $ do
+    let base = "PROGRAM P\nVAR x: INT; y: INT; b: BOOL; END_VAR\n"
+
+        ok :: [Text]
+        ok =
+          [ "x := ADD(1, 2);",
+            "x := ADD(y := 2, x := 1);", -- 名前付き引数（順不同）
+            "x := ADD(1, y := 2);", -- 位置引数のあとに名前付きは OK
+            "x := SUB( (1), 2 );", -- 空白・括弧あり
+            "x := ADD(SUB(3, 1), 2);", -- ネスト呼び出し
+            "x := NOP();" -- 引数なし
+          ]
+
+    forM_ ok $ \s ->
+      it ("parses: " <> T.unpack s) $
+        parseProgram (base <> s) `shouldSatisfy` isRight
+
+    it "rejects trailing comma in call (parse error)" $ do
+      -- 文法的に不正：末尾カンマ
+      parseProgram (base <> "x := ADD(1, );\n") `shouldSatisfy` isLeft

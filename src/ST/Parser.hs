@@ -603,7 +603,7 @@ pPrimaryE :: Parser Expr
 pPrimaryE =
   choice
     [ pArrayAgg,
-      try pStructAgg,
+      pStructAgg,
       parens pExpr,
       try pCharLit,
       try pWCharLit,
@@ -617,10 +617,11 @@ pPrimaryE =
       try pTimeLit,
       pStringLit,
       pWStringLit,
-      EBOOL <$> pBool,
+      EBOOL <$> try pBool,
       try pTypedReal,
       EREAL <$> try pReal, -- 無印はREAL扱い
-      EINT <$> pInt,
+      EINT <$> try pInt,
+      try (ECall <$> identifier <*> pCallArgs),
       EVar <$> identifier
     ]
 
@@ -1091,3 +1092,24 @@ pHMSWithFrac = do
   ss <- read <$> some digitChar
   nanos <- fromMaybe 0 <$> optional pFracNanos
   pure (TimeOfDay hh mm ss nanos)
+
+-- 引数リスト: ( ... ) 部分だけ
+-- 例:
+--   f(1, 2)
+--   f(x := 1, y := 2)
+--   f(1, y := 2)
+pCallArgs :: Parser [CallArg]
+pCallArgs =
+  parens (pArg `sepBy` symbol ",")
+  where
+    -- 名前付き: ident := expr
+    pArg =
+      try namedArg <|> posArg
+
+    namedArg = do
+      name <- identifier
+      _ <- symbol ":="
+      NamedArg name <$> pExpr
+
+    posArg =
+      PosArg <$> pExpr
