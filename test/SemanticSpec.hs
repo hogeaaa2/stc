@@ -144,7 +144,7 @@ expectUnitFailWithDetail src pred' =
 -- （ST.Semantic から FunEnv, FunSig, elaborateUnitWithFuns を import 済み想定）
 
 -- 成功を期待（関数シグネチャ付き）
-expectUnitPassWithFuns :: FunEnv -> Text -> Expectation
+expectUnitPassWithFuns :: FuncEnv -> Text -> Expectation
 expectUnitPassWithFuns funs src =
   case parseUnit src of
     Left e -> expectationFailure (show e)
@@ -157,7 +157,7 @@ expectUnitPassWithFuns funs src =
 expectUnitFailWithFuns ::
   forall err.
   (err :| AllErrs, Typeable err) =>
-  FunEnv -> Text -> Expectation
+  FuncEnv -> Text -> Expectation
 expectUnitFailWithFuns funs src =
   case parseUnit src of
     Left e -> expectationFailure (show e)
@@ -170,7 +170,7 @@ expectUnitFailWithFuns funs src =
 expectUnitFailWithDetailWithFuns ::
   forall err.
   (err :| AllErrs, Typeable err) =>
-  FunEnv -> Text -> (err -> Bool) -> Expectation
+  FuncEnv -> Text -> (err -> Bool) -> Expectation
 expectUnitFailWithDetailWithFuns funs src pred' =
   case parseUnit src of
     Left e -> expectationFailure (show e)
@@ -1545,7 +1545,7 @@ main = hspec $ do
   xdescribe "Function calls (semantics) with injected signatures" $ do
     let base = "PROGRAM P\nVAR x: INT; y: INT; b: BOOL; END_VAR\n"
 
-        funsSimple :: FunEnv
+        funsSimple :: FuncEnv
         funsSimple =
           M.fromList
             [ ("ADD", FunSig "ADD" [("x", INT), ("y", INT)] INT),
@@ -1553,7 +1553,7 @@ main = hspec $ do
               ("NOP", FunSig "NOP" [] INT)
             ]
 
-        funsReal :: FunEnv
+        funsReal :: FuncEnv
         funsReal =
           M.fromList
             [ ("MIX", FunSig "MIX" [("a", INT), ("b", REAL)] REAL)

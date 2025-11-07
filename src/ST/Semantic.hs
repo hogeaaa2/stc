@@ -10,6 +10,7 @@ module ST.Semantic
     elaborateUnit,
     elaborateUnitWithFuns,
     nominalEq,
+    FuncEnv,
     DuplicateVar (..),
     UnknownVar (..),
     AssignToConst (..),
@@ -33,7 +34,6 @@ module ST.Semantic
     TooManyAggElems (..),
     IndexOutOfBounds (..),
     BadUseOfFunction (..),
-    FunEnv,
     UnknownFunction (..),
     BadArgCount (..),
     ArgTypeMismatch (..),
@@ -43,7 +43,7 @@ module ST.Semantic
   )
 where
 
-import Control.Monad (forM, forM_, guard, unless, when)
+import Control.Monad (foldM, forM, forM_, guard, unless, when)
 import Data.List (sortOn)
 import Data.Map.Strict qualified as M
 import Data.Maybe (catMaybes, fromMaybe)
@@ -56,11 +56,17 @@ import Vary ((:|))
 import Vary.VEither (VEither (VLeft, VRight))
 import Vary.VEither qualified as VEither
 
-type Env = M.Map Text VarInfo
+type VarEnv = M.Map Text VarInfo
 
 type TypeEnv = M.Map Text STType
 
-type FunEnv = M.Map Text FunSig
+type FuncEnv = M.Map Text FunSig
+
+data Env = Env
+  { envTypes :: TypeEnv,
+    envVars :: VarEnv,
+    envFuncs :: FuncEnv
+  }
 
 type ExpectedSTType = STType
 
@@ -173,8 +179,80 @@ elaborateUnitWithFuns ::
     BadIndexCount :| e,
     NonConstantExpr :| e
   ) =>
-  FunEnv -> Unit -> VEither e Unit
-elaborateUnitWithFuns = undefined
+  FuncEnv ->
+  Unit ->
+  VEither e Unit
+elaborateUnitWithFuns fenv (Unit tys progs) = do
+  -- 型解決
+  let tenv0 = typeEnvOf tys
+  tys' <- traverse (\(TypeDecl n t) -> TypeDecl n <$> resolveType tenv0 t) tys
+  let tenv = typeEnvOf tys'
+
+  -- 各 Program
+  progs' <- forM progs $ \(Program n vds body) -> do
+    -- まず型解決済み VarDecls
+    vds'@(VarDecls vs) <- resolveVarTypes tenv vds
+
+    -- VarEnv を構築（重複チェックもここで）
+    venv <- foldM (insertVar n) M.empty vs
+
+    let env = Env {envTypes = tenv, envVars = venv, envFuncs = fenv}
+
+    -- 初期化子チェック＆デフォルト付与
+    vs'' <- traverse (elabVar env) vs
+
+    -- ステートメント検査
+    mapM_ (checkStmt env) body
+
+    pure (Program n (VarDecls vs'') body)
+
+  pure (Unit tys' progs')
+  where
+    insertVar progName m v = do
+      let name = locVal (varName v)
+          sp = locSpan (varName v)
+      case M.lookup name m of
+        Just _ -> VEither.fromLeft $ DuplicateVar name sp
+        Nothing ->
+          pure $
+            M.insert
+              name
+              VarInfo
+                { viType = varType v,
+                  viSpan = sp,
+                  viKind = if varConst v then VKConstant else VKLocal,
+                  viInit = varInit v
+                }
+              m
+
+-- 既存の elaborateUnit は空の関数環境で
+elaborateUnit ::
+  ( DuplicateVar :| e,
+    TypeMismatch :| e,
+    TypeMismatch' :| e,
+    MissingInitializer :| e,
+    AssignToLoopVar :| e,
+    InvalidCaseRange :| e,
+    OverlappingCase :| e,
+    OutOfRange :| e,
+    UnknownStructMember :| e,
+    NotAStruct :| e,
+    TooManyAggElems :| e,
+    BadUseOfFunction :| e,
+    TypeCycle :| e,
+    UnknownType :| e,
+    UnknownEnumMember :| e,
+    NotAnEnum :| e,
+    IndexOutOfBounds :| e,
+    NotAnArray :| e,
+    UnknownVar :| e,
+    AssignToConst :| e,
+    BadIndexCount :| e,
+    NonConstantExpr :| e
+  ) =>
+  Unit ->
+  VEither e Unit
+elaborateUnit = elaborateUnitWithFuns M.empty
 
 elaborateProgram ::
   ( DuplicateVar :| e,
@@ -229,16 +307,17 @@ elaborateProgramWithTypes ::
     BadIndexCount :| e,
     NonConstantExpr :| e
   ) =>
-  TypeEnv ->
+  FuncEnv ->
   Program ->
   VEither e Program
-elaborateProgramWithTypes tenv (Program name (VarDecls vs) body) = do
+elaborateProgramWithTypes fenv (Program name (VarDecls vs) body) = do
   -- 変数環境: 型は解決済みにして保持
-  env <- foldl insertVar (VRight M.empty) vs
+  venv <- foldl insertVar (VRight M.empty) vs
   -- 既定初期値の付与・初期化式の型チェック
-  vs' <- traverse (elabVar tenv env) vs
+  let env = Env {envTypes = M.empty, envVars = venv, envFuncs = fenv}
+  vs' <- traverse (elabVar env) vs
   -- 本体の文
-  mapM_ (checkStmt tenv env) body
+  mapM_ (checkStmt env) body
   pure (Program name (VarDecls vs') body)
   where
     insertVar acc v = do
@@ -262,49 +341,49 @@ elaborateProgramWithTypes tenv (Program name (VarDecls vs) body) = do
                 m
             )
 
-elaborateUnit ::
-  ( DuplicateVar :| e,
-    TypeMismatch :| e,
-    TypeMismatch' :| e,
-    MissingInitializer :| e,
-    AssignToLoopVar :| e,
-    InvalidCaseRange :| e,
-    OverlappingCase :| e,
-    OutOfRange :| e,
-    UnknownStructMember :| e,
-    NotAStruct :| e,
-    TooManyAggElems :| e,
-    BadUseOfFunction :| e,
-    TypeCycle :| e,
-    UnknownType :| e,
-    UnknownEnumMember :| e,
-    NotAnEnum :| e,
-    IndexOutOfBounds :| e,
-    NotAnArray :| e,
-    UnknownVar :| e,
-    AssignToConst :| e,
-    BadIndexCount :| e,
-    NonConstantExpr :| e
-  ) =>
-  Unit ->
-  VEither e Unit
-elaborateUnit (Unit tys progs) = do
-  -- 1) TYPE ブロックの本体を解決（別名をたどる・循環検出など）
-  let tenv0 = typeEnvOf tys
-  tys' <- traverse (\(TypeDecl n t) -> TypeDecl n <$> resolveType tenv0 t) tys
-  -- 2) 解決後の TYPE から、解決済みテーブルを作り直す
-  let tenv = typeEnvOf tys'
-  -- 3) 各 Program の VAR の型を解決して書き戻し
-  progsResolved <-
-    traverse
-      ( \(Program n vds b) -> do
-          vds' <- resolveVarTypes tenv vds
-          pure (Program n vds' b)
-      )
-      progs
-  -- 4) 解決済み TypeEnv を渡して elaboration（既定初期値付与・型チェック）
-  progs' <- traverse (elaborateProgramWithTypes tenv) progsResolved
-  pure (Unit tys' progs')
+-- elaborateUnit ::
+--   ( DuplicateVar :| e,
+--     TypeMismatch :| e,
+--     TypeMismatch' :| e,
+--     MissingInitializer :| e,
+--     AssignToLoopVar :| e,
+--     InvalidCaseRange :| e,
+--     OverlappingCase :| e,
+--     OutOfRange :| e,
+--     UnknownStructMember :| e,
+--     NotAStruct :| e,
+--     TooManyAggElems :| e,
+--     BadUseOfFunction :| e,
+--     TypeCycle :| e,
+--     UnknownType :| e,
+--     UnknownEnumMember :| e,
+--     NotAnEnum :| e,
+--     IndexOutOfBounds :| e,
+--     NotAnArray :| e,
+--     UnknownVar :| e,
+--     AssignToConst :| e,
+--     BadIndexCount :| e,
+--     NonConstantExpr :| e
+--   ) =>
+--   Unit ->
+--   VEither e Unit
+-- elaborateUnit (Unit tys progs) = do
+--   -- 1) TYPE ブロックの本体を解決（別名をたどる・循環検出など）
+--   let tenv0 = typeEnvOf tys
+--   tys' <- traverse (\(TypeDecl n t) -> TypeDecl n <$> resolveType tenv0 t) tys
+--   -- 2) 解決後の TYPE から、解決済みテーブルを作り直す
+--   let tenv = typeEnvOf tys'
+--   -- 3) 各 Program の VAR の型を解決して書き戻し
+--   progsResolved <-
+--     traverse
+--       ( \(Program n vds b) -> do
+--           vds' <- resolveVarTypes tenv vds
+--           pure (Program n vds' b)
+--       )
+--       progs
+--   -- 4) 解決済み TypeEnv を渡して elaboration（既定初期値付与・型チェック）
+--   progs' <- traverse (elaborateProgramWithTypes tenv) progsResolved
+--   pure (Unit tys' progs')
 
 toIdent :: Text -> Identifier
 toIdent txt =
@@ -411,8 +490,8 @@ numericLiteralValue = \case
   _ -> Nothing
 
 -- 定数「設計子」を整数に評価（リテラル or VAR CONSTANT）
-constIntValue :: TypeEnv -> Env -> Expr -> Maybe Int
-constIntValue tenv env e = case evalConstExpr tenv env e of
+constIntValue :: Env -> Expr -> Maybe Int
+constIntValue env e = case evalConstExpr env e of
   Just (CVInt n) -> Just n
   _ -> Nothing
 
@@ -574,11 +653,10 @@ inferType ::
     UnknownVar :| e,
     TypeMismatch' :| e
   ) =>
-  TypeEnv ->
   Env ->
   Expr ->
   VEither e STType
-inferType tenv env = \case
+inferType env = \case
   EINT _ -> VRight INT
   EBOOL _ -> VRight BOOL
   EREAL _ -> VRight REAL
@@ -588,7 +666,7 @@ inferType tenv env = \case
   ECHAR _ -> VRight CHAR
   EWCHAR _ -> VRight WCHAR
   ENeg expr -> do
-    t <- inferType tenv env expr
+    t <- inferType env expr
     case t of
       INT -> VRight INT
       REAL -> VRight REAL
@@ -600,8 +678,8 @@ inferType tenv env = \case
   EMul a b -> arith2 a b
   EDiv a b -> arith2 a b
   EMod a b -> do
-    ta <- inferType tenv env a
-    tb <- inferType tenv env b
+    ta <- inferType env a
+    tb <- inferType env b
     if ta == INT && tb == INT
       then pure INT
       else VEither.fromLeft $ TypeMismatch' $ if ta /= INT then ta else tb
@@ -613,8 +691,8 @@ inferType tenv env = \case
   EGt a b -> comp2 ">" a b
   EGe a b -> comp2 ">=" a b
   ENot e -> do
-    t0 <- inferType tenv env e
-    let t = resolvePrim tenv t0
+    t0 <- inferType env e
+    let t = resolvePrim (envTypes env) t0
     case t of
       BOOL -> VRight BOOL
       BYTE -> VRight BYTE
@@ -625,7 +703,7 @@ inferType tenv env = \case
   EAnd a b -> bitwise2 a b
   EXor a b -> bitwise2 a b
   EOr a b -> bitwise2 a b
-  EVar x -> case M.lookup (locVal x) env of
+  EVar x -> case M.lookup (locVal x) (envVars env) of
     Nothing -> VEither.fromLeft $ UnknownVar (locVal x) (locSpan x)
     Just info -> VRight $ viType info
   -- a.b の型判定：まず構造体フィールドを試し、それ以外は Enum 修飾の可能性を検討
@@ -633,12 +711,12 @@ inferType tenv env = \case
   EField e fld -> case e of
     -- 左が識別子のとき：まず“変数か？”を優先チェック
     EVar vId ->
-      case M.lookup (locVal vId) env of
+      case M.lookup (locVal vId) (envVars env) of
         -- 変数が見つかる → 構造体アクセスとして扱う
         Just _ -> goStruct fld e
         Nothing ->
           -- 変数ではなかったので“型名か？”を判定
-          case resolveType tenv (Named vId) :: VEither e STType of
+          case resolveType (envTypes env) (Named vId) :: VEither e STType of
             VRight (Enum ctors) ->
               if any ((== locVal fld) . locVal . fst) ctors
                 then VRight (Named vId) -- 列挙は Named を返す（A-4/a）
@@ -649,20 +727,20 @@ inferType tenv env = \case
     -- それ以外は通常の構造体アクセス解決
     _ -> goStruct fld e
   EIndex arr idxs -> do
-    tBase <- inferType tenv env arr
-    tRes <- resolveType tenv tBase
+    tBase <- inferType env arr
+    tRes <- resolveType (envTypes env) tBase
 
     case tRes of
       Array ranges elTy -> do
         -- 次元数チェックは必要ならここで
         forM_ (zip idxs ranges) $ \(ie, ArrRange lo hi) -> do
-          ti <- inferType tenv env ie
+          ti <- inferType env ie
           -- 添字は整数系のみを許可（必要に応じて緩めてもOK）
           unless (ti == INT || isIntOrBits ti) $
             VEither.fromLeft $
               TypeMismatch' ti
           -- 定数なら静的境界チェック
-          case constIntValue tenv env ie of
+          case constIntValue env ie of
             Just n ->
               unless (lo <= n && n <= hi) $
                 VEither.fromLeft $
@@ -678,7 +756,7 @@ inferType tenv env = \case
       _ -> VEither.fromLeft $ NotAnArray (spanOfExpr arr) tRes
   EEnum ty ctor -> do
     -- TypeName を解決して列挙型かチェック
-    tResolved <- resolveType tenv (Named ty)
+    tResolved <- resolveType (envTypes env) (Named ty)
     case tResolved of
       Enum ctors ->
         if any (\i -> locVal (fst i) == locVal ctor) ctors
@@ -698,7 +776,7 @@ inferType tenv env = \case
   EStructAgg _ -> VEither.fromLeft BadUseOfFunction
   where
     eqLike ta tb =
-      if nominalEq tenv ta tb
+      if nominalEq (envTypes env) ta tb
         then VRight BOOL
         else VEither.fromLeft $ TypeMismatch' tb
 
@@ -746,8 +824,8 @@ inferType tenv env = \case
 
     -- 数値の2項演算
     arith2 a b = do
-      ta <- inferType tenv env a
-      tb <- inferType tenv env b
+      ta <- inferType env a
+      tb <- inferType env b
       case (ta, tb) of
         (INT, INT) -> VRight INT
         (REAL, REAL) -> VRight REAL
@@ -764,16 +842,16 @@ inferType tenv env = \case
     -- 比較: 数値同士は OK（混在可）→ BOOL
     comp2 :: String -> Expr -> Expr -> VEither e STType
     comp2 o a b = do
-      ta <- inferType tenv env a
-      tb <- inferType tenv env b
+      ta <- inferType env a
+      tb <- inferType env b
       case o of
         "=" -> eqLike ta tb
         "<>" -> eqLike ta tb
         _ -> ordLike ta tb
 
     goStruct fld base = do
-      tr <- inferType tenv env base
-      case resolveType tenv tr :: VEither e STType of
+      tr <- inferType env base
+      case resolveType (envTypes env) tr :: VEither e STType of
         VRight (Struct fs) ->
           case lookup (locVal fld) [(locVal n, t) | (n, t) <- fs] of
             Just t -> VRight t
@@ -799,10 +877,10 @@ inferType tenv env = \case
     --   - 同幅 BITSTRING 同士 → その型
     --   - それ以外 → 型不一致
     bitwise2 a b = do
-      ta0 <- inferType tenv env a
-      tb0 <- inferType tenv env b
-      let ta = resolvePrim tenv ta0
-          tb = resolvePrim tenv tb0
+      ta0 <- inferType env a
+      tb0 <- inferType env b
+      let ta = resolvePrim (envTypes env) ta0
+          tb = resolvePrim (envTypes env) tb0
       case (ta, tb) of
         (BOOL, BOOL) -> VRight BOOL
         _ | isBitString ta && ta == tb -> VRight ta
@@ -832,15 +910,14 @@ lvalueType ::
     NotAnArray :| e,
     IndexOutOfBounds :| e
   ) =>
-  TypeEnv ->
   Env ->
   STType ->
   LValue ->
   VEither e STType
-lvalueType tenv env ty = \case
+lvalueType env ty = \case
   -- 変数：必ず環境に存在すること。無ければ UnknownVar
   LVar i ->
-    case M.lookup (locVal i) env of
+    case M.lookup (locVal i) (envVars env) of
       Nothing ->
         VEither.fromLeft $ UnknownVar (locVal i) (locSpan i)
       Just info ->
@@ -848,7 +925,7 @@ lvalueType tenv env ty = \case
           then VEither.fromLeft $ AssignToConst (locVal i) (locSpan i)
           else VRight $ viType info
   LField l fld -> do
-    tr <- lvalueType tenv env ty l
+    tr <- lvalueType env ty l
     case tr of
       Struct fs ->
         case lookupByText fld fs of
@@ -856,19 +933,19 @@ lvalueType tenv env ty = \case
           Nothing -> VEither.fromLeft $ UnknownStructMember tr (locVal fld) (locSpan fld)
       _ -> VEither.fromLeft $ NotAStruct (locSpan fld) tr
   LIndex base idxs@(idx : _) -> do
-    tBase <- lvalueType tenv env INT base -- 第3引数は未使用なら何でもOK
-    tRes <- resolveType tenv tBase :: VEither e STType
+    tBase <- lvalueType env INT base -- 第3引数は未使用なら何でもOK
+    tRes <- resolveType (envTypes env) tBase :: VEither e STType
     case tRes of
       Array ranges elTy -> do
         when (length idxs /= length ranges) $
           VEither.fromLeft $
             BadIndexCount (spanOfExpr idx)
         forM_ (zip idxs ranges) $ \(ie, ArrRange lo hi) -> do
-          ti <- inferType tenv env ie
+          ti <- inferType env ie
           unless (ti == INT || isIntOrBits ti) $
             VEither.fromLeft $
               TypeMismatch' ti
-          case constIntValue tenv env ie of
+          case constIntValue env ie of
             Just n ->
               unless (lo <= n && n <= hi) $
                 VEither.fromLeft $
@@ -901,18 +978,18 @@ elabVar ::
     NotAnArray :| e,
     UnknownVar :| e
   ) =>
-  TypeEnv -> Env -> Variable -> VEither e Variable
-elabVar tenv env v =
+  Env -> Variable -> VEither e Variable
+elabVar env v =
   case (varConst v, varInit v) of
     (True, Nothing) -> VEither.fromLeft $ MissingInitializer (locVal (varName v)) (locSpan (varName v))
     (True, Just e) -> set =<< check e
     (False, Nothing) ->
-      case defaultInitWithTypes tenv (varType v) of
+      case defaultInitWithTypes (envTypes env) (varType v) of
         Just e0 -> set e0
         Nothing -> VRight v
     (False, Just e) -> set =<< check e
   where
-    check = checkExprAssignable tenv env (varType v) (varName v)
+    check = checkExprAssignable env (varType v) (varName v)
     set e' = VRight v {varInit = Just e'}
 
 -- check e = do
@@ -960,7 +1037,6 @@ checkExprAssignable ::
     NotAStruct :| e,
     UnknownStructMember :| e
   ) =>
-  TypeEnv ->
   Env ->
   -- | tgt: 左辺の期待型（宣言型）
   STType ->
@@ -970,14 +1046,14 @@ checkExprAssignable ::
   Expr ->
   -- | 正規化済みの式（初期化子なら整形後の Expr）
   VEither e Expr
-checkExprAssignable tenv env tgt who e0 = do
-  let tgt' = case resolveType tenv tgt :: VEither e STType of
+checkExprAssignable env tgt who e0 = do
+  let tgt' = case resolveType (envTypes env) tgt :: VEither e STType of
         VRight t -> t
         _ -> tgt -- Named 解決
   case e0 of
     -- 集成初期化子は「期待型ありき」なので、ここで確定させる
-    EArrayAgg xs -> checkArrayAggInit tenv env who tgt' xs -- 既存：正規化済み Expr を返す想定
-    EStructAgg fs -> checkStructAggInit tenv env who tgt' fs -- 既存：正規化済み Expr を返す想定
+    EArrayAgg xs -> checkArrayAggInit env who tgt' xs -- 既存：正規化済み Expr を返す想定
+    EStructAgg fs -> checkStructAggInit env who tgt' fs -- 既存：正規化済み Expr を返す想定
 
     -- 整数/ビット列 への “整数リテラル” は範囲チェック
     _ -> do
@@ -988,8 +1064,8 @@ checkExprAssignable tenv env tgt who e0 = do
             else VEither.fromLeft $ OutOfRange (locVal who) tgt' n (spanOfExpr e0)
         -- 上記以外は通常の型推論 → 代入互換判定
         _ -> do
-          ty <- inferType tenv env e0
-          if assignCoerce tenv ty tgt'
+          ty <- inferType env e0
+          if assignCoerce (envTypes env) ty tgt'
             then VRight e0
             else VEither.fromLeft $ TypeMismatch (locVal who) (locSpan who) tgt' ty
 
@@ -1013,14 +1089,13 @@ checkArrayAggInit ::
     NotAStruct :| e,
     UnknownStructMember :| e
   ) =>
-  TypeEnv ->
   Env ->
   Identifier -> -- 変数名（診断用）
   STType -> -- 期待型（Named 可能）
   [Expr] -> -- 与えられた要素
   VEither e Expr -- 正規化した EArrayAgg を返す
-checkArrayAggInit tenv env vname tgtTy0 es = do
-  tgtTy <- resolveType tenv tgtTy0
+checkArrayAggInit env vname tgtTy0 es = do
+  tgtTy <- resolveType (envTypes env) tgtTy0
   case tgtTy of
     Array ranges elTy -> do
       let len = arrayCapacity ranges
@@ -1031,9 +1106,9 @@ checkArrayAggInit tenv env vname tgtTy0 es = do
           VEither.fromLeft $ TooManyAggElems (locVal vname) sp len (length es)
         else do
           -- 既存の単一要素割当ルールで各要素を検査
-          mapM_ (checkExprAssignable tenv env elTy vname) es
+          mapM_ (checkExprAssignable env elTy vname) es
           -- 足りない分は型の既定初期値で埋める（なければエラーにしたい場合はここで Left）
-          let fillers = replicate (len - length es) (fromMaybe (fallbackZero elTy) (defaultInitWithTypes tenv elTy))
+          let fillers = replicate (len - length es) (fromMaybe (fallbackZero elTy) (defaultInitWithTypes (envTypes env) elTy))
           VRight (EArrayAgg (es ++ fillers))
     _ -> VEither.fromLeft $ NotAnArray (locSpan vname) tgtTy -- 期待が配列でない
   where
@@ -1063,15 +1138,14 @@ checkStructAggInit ::
     NotAnArray :| e,
     UnknownVar :| e
   ) =>
-  TypeEnv ->
   Env ->
   Identifier ->
   STType ->
   [(Identifier, Expr)] -> -- (フィールド名 := 式)
   VEither e Expr
-checkStructAggInit tenv env varId tgtTy pairs = do
+checkStructAggInit env varId tgtTy pairs = do
   -- 1) ターゲット型を解決して構造体定義を得る
-  resolved <- resolveType tenv tgtTy
+  resolved <- resolveType (envTypes env) tgtTy
   case resolved of
     Struct defFields -> do
       -- 定義済みフィールドのマップ（Text キー）
@@ -1088,7 +1162,7 @@ checkStructAggInit tenv env varId tgtTy pairs = do
                 (locVal fld) -- 変数名 or 型名、あなたの診断定義に合わせて
                 (locSpan fld)
           Just (_defNm, fTy) -> do
-            e' <- checkExprAssignable tenv env fTy fld e -- Expr を正規化して返す版
+            e' <- checkExprAssignable env fTy fld e -- Expr を正規化して返す版
             pure (locVal fld, (fld, e'))
 
       -- 2) 重複（同一フィールド二度指定）チェック（任意）
@@ -1112,7 +1186,7 @@ checkStructAggInit tenv env varId tgtTy pairs = do
         case M.lookup (locVal nm) given of
           Just e' -> pure (nm, e')
           Nothing ->
-            case defaultInitWithTypes tenv fTy of
+            case defaultInitWithTypes (envTypes env) fTy of
               Just defE -> pure (nm, defE)
               Nothing -> VEither.fromLeft BadUseOfFunction -- pure (nm, EDefault) -- 必要に応じてポリシーを
 
@@ -1284,15 +1358,14 @@ checkStmt ::
     IndexOutOfBounds :| e,
     NonConstantExpr :| e
   ) =>
-  TypeEnv ->
   Env ->
   Statement ->
   VEither e ()
-checkStmt tenv env = \case
+checkStmt env = \case
   Skip -> VRight ()
   Assign lv e -> do
-    tr <- inferType tenv env e
-    tl <- lvalueType tenv env tr lv
+    tr <- inferType env e
+    tl <- lvalueType env tr lv
     -- 特例: 右辺が整数リテラルで、左辺が整数/ビット列 → 範囲チェック
     case (isIntOrBits tl, numericLiteralValue e) of
       (True, Just n) ->
@@ -1300,42 +1373,42 @@ checkStmt tenv env = \case
           then VRight ()
           else VEither.fromLeft $ OutOfRange (lvalueRootName lv) tl n (spanOfExpr e)
       _ ->
-        if assignCoerce tenv tr tl
+        if assignCoerce (envTypes env) tr tl
           then VRight ()
           else VEither.fromLeft $ TypeMismatch (lvalueRootName lv) (spanOfExpr e) tl tr
   If c0 th0 elsifs els -> do
-    t0 <- inferType tenv env c0
+    t0 <- inferType env c0
     if t0 == BOOL
       then pure ()
       else VEither.fromLeft $ TypeMismatch' t0
-    mapM_ (checkStmt tenv env) th0
+    mapM_ (checkStmt env) th0
     -- 各 ELSIF
     forM_ elsifs $ \(ce, block) -> do
-      te <- inferType tenv env ce
+      te <- inferType env ce
       if te == BOOL
         then pure ()
         else VEither.fromLeft $ TypeMismatch' te
-      mapM_ (checkStmt tenv env) block
+      mapM_ (checkStmt env) block
     -- ELSE
-    mapM_ (checkStmt tenv env) els
+    mapM_ (checkStmt env) els
   -- WHILE：条件は BOOL
   While cond body -> do
-    t <- inferType tenv env cond
+    t <- inferType env cond
     if t == BOOL
-      then mapM_ (checkStmt tenv env) body
+      then mapM_ (checkStmt env) body
       else VEither.fromLeft $ TypeMismatch' t
 
   -- REPEAT：UNTIL 条件は BOOL
   Repeat body cond -> do
-    mapM_ (checkStmt tenv env) body
-    t <- inferType tenv env cond
+    mapM_ (checkStmt env) body
+    t <- inferType env cond
     if t == BOOL
       then VRight ()
       else VEither.fromLeft $ TypeMismatch' t
   -- CASE：セレクタは Constant_Expr / Subrange（定数式）で、型は scrutinee と一致（名目同一含む）
   Case scrut arms els -> do
-    tScrut <- inferType tenv env scrut
-    unless (isCaseScrutineeType tenv tScrut) $ VEither.fromLeft $ TypeMismatch' tScrut
+    tScrut <- inferType env scrut
+    unless (isCaseScrutineeType (envTypes env) tScrut) $ VEither.fromLeft $ TypeMismatch' tScrut
     -- ここでは INT / ENUM（Named→Enum 解決）を主対象（必要なら REAL/LREAL 拡張可）
     -- 型チェックは nominalEq を使って “同名 ENUM 同士” を同一扱い。
     -- let checkSel = \case
@@ -1355,13 +1428,13 @@ checkStmt tenv env = \case
     --           else Left [OpTypeMismatch {op = "CASE", expected = tScrut, actual = tb}]
     -- セレクタ1個の基本チェック（定数式 + 型一致）
     let checkSelBasic e = do
-          tSel <- inferType tenv env e
-          if nominalEq tenv tScrut tSel
-            then checkConstDesignator tenv env e
+          tSel <- inferType env e
+          if nominalEq (envTypes env) tScrut tSel
+            then checkConstDesignator env e
             else VEither.fromLeft $ TypeMismatch' tSel
 
     -- アーム本体の文の検査
-    let checkArmBody = mapM_ (checkStmt tenv env)
+    let checkArmBody = mapM_ (checkStmt env)
 
     -- ★ まず各セレクタの基本検査（全型に共通）
     forM_ arms $ \(CaseArm sels _) -> do
@@ -1369,7 +1442,7 @@ checkStmt tenv env = \case
         CSExpr e -> checkSelBasic e
         CSRangeE a b -> do
           -- ENUM のとき range は不許可（型ミスマッチ扱いで弾く）
-          case isEnumNamed tenv tScrut of
+          case isEnumNamed (envTypes env) tScrut of
             Just _ ->
               VEither.fromLeft $ TypeMismatch' INT
             Nothing -> do
@@ -1410,7 +1483,7 @@ checkStmt tenv env = \case
       -- mapM_ (\(CaseArm sels ss) -> mapM_ checkSel sels >> mapM_ (checkStmt tenv env) ss) arms
       -- mapM_ (checkStmt tenv env) els
     forM_ arms $ \(CaseArm _ ss) -> checkArmBody ss
-    mapM_ (checkStmt tenv env) els
+    mapM_ (checkStmt env) els
     where
 
   -- -- ラベル種別に応じて「期待/実際」の型を作るためのヘルパ
@@ -1436,7 +1509,7 @@ checkStmt tenv env = \case
     -- ループ変数の存在／const でない／型が INT
     let nameTxt = locVal iv
         whereSp = locSpan iv
-    case M.lookup nameTxt env of
+    case M.lookup nameTxt (envVars env) of
       Nothing -> VEither.fromLeft $ UnknownVar nameTxt whereSp
       Just info ->
         case viKind info of
@@ -1444,21 +1517,21 @@ checkStmt tenv env = \case
           _ -> when (viType info /= INT) $ VEither.fromLeft $ TypeMismatch nameTxt whereSp INT $ viType info
 
     -- init / end / step は INT
-    t0 <- inferType tenv env e0
+    t0 <- inferType env e0
     if t0 == INT then pure () else VEither.fromLeft $ TypeMismatch' t0
-    t1 <- inferType tenv env e1
+    t1 <- inferType env e1
     if t1 == INT then pure () else VEither.fromLeft $ TypeMismatch' t1
     case mby of
       Nothing -> pure ()
       Just s -> do
-        ts <- inferType tenv env s
+        ts <- inferType env s
         if ts == INT then pure () else VEither.fromLeft $ TypeMismatch' ts
 
     -- 本体でループ変数への代入を禁止
     mapM_ (denyAssignTo nameTxt) body
 
     -- 本体の通常の型チェック
-    mapM_ (checkStmt tenv env) body
+    mapM_ (checkStmt env) body
   where
     -- 左辺の“ベース変数”は既存の baseIdent を使用
     denyAssignTo nm = \case
@@ -1502,8 +1575,8 @@ checkConstDesignator ::
     TypeCycle :| e,
     UnknownType :| e
   ) =>
-  TypeEnv -> Env -> Expr -> VEither e ()
-checkConstDesignator tenv env = go
+  Env -> Expr -> VEither e ()
+checkConstDesignator env = go
   where
     ok = VRight ()
 
@@ -1514,10 +1587,10 @@ checkConstDesignator tenv env = go
       ENeg e | isIntLikeLiteral e -> ok
       -- 列挙リテラル: Type.Ctor の形（Type は Named で Enum に解決できること）
       EField (EVar ty) _ctor
-        | isEnumType tenv ty -> ok
+        | isEnumType (envTypes env) ty -> ok
       -- VAR CONSTANT な識別子
       EVar i
-        | isConstVar env i -> ok
+        | isConstVar (envVars env) i -> ok
       -- VAR CONSTANT な配列要素（添字は整数リテラルのみ許可）
       EIndex base idxs
         | VRight () <- go base,
@@ -1651,8 +1724,8 @@ nominalEq tenv a b =
 --         Just (_, _, prev) -> Left [DuplicateVar n prev sp]
 --         Nothing -> VRight (M.insert n (varType v, varConst v, sp) m)
 
-evalConstExpr :: TypeEnv -> Env -> Expr -> Maybe ConstVal
-evalConstExpr tenv env = go
+evalConstExpr :: Env -> Expr -> Maybe ConstVal
+evalConstExpr env = go
   where
     go = \case
       -- 数値（符号も含む）
@@ -1672,14 +1745,14 @@ evalConstExpr tenv env = go
       EDT dt -> Just (CVDT dt)
       -- 列挙 Type.Ctor
       EField (EVar ty) ctor ->
-        case resolveType tenv (Named ty) :: VEither [TypeCycle, UnknownType] STType of
+        case resolveType (envTypes env) (Named ty) :: VEither [TypeCycle, UnknownType] STType of
           VRight (Enum ctors)
             | any ((== locVal ctor) . locVal . fst) ctors ->
                 Just (CVEnum (locVal ty) (locVal ctor))
           _ -> Nothing
       -- VAR CONSTANT の伝播
       EVar i -> do
-        vi <- M.lookup (locVal i) env
+        vi <- M.lookup (locVal i) (envVars env)
         guard (viKind vi == VKConstant)
         initE <- viInit vi
         go initE
