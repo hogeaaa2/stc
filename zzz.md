@@ -1,209 +1,70 @@
-いい感じのところまで来てます ✨
+# Next（着手候補 1〜3 件／1 行要約）
 
-質問2つに分けて答えるね。
+- [IN-PROGRESS] A: FUNCTION/FB の AST & Parser → tests: `test/Spec.hs` “parses FUNCTION … / FUNCTION_BLOCK …, rejects …” | run: `stack test :p --test-arguments "-m \"FUNCTION\|FUNCTION_BLOCK\""`
+- [PENDING] B: POU シグネチャを FuncEnv へ反映 → tests: `test/SemanticSpec.hs` “accepts function call … / rejects bad args …” | run: `stack test :s --test-arguments "-m \"function call\""`
+- [PENDING] C: ユーザー定義 FUNCTION 本体の型チェック → tests: `test/SemanticSpec.hs` “parses/accepts FUNCTION body … / rejects missing return …” | run: `stack test :s --test-arguments "-m \"FUNCTION body\""`
 
----
-
-## 1. ANY型 in VAR_INPUT について
-
-認識あってます。
-
-* IEC 61131-3 的には、`ANY`, `ANY_INT`, `ANY_NUM`, … は、
-  **主に FUNCTION / FUNCTION_BLOCK の VAR_INPUT（引数）専用の「型クラス」** として使う想定。
-* 「実体としての変数の型」ではなく、
-  「呼び出し時に具体型でインスタンス化されるパラメータ」の制約。
-* なので今やってる:
-
-  * `GST`（Generic type family）
-  * `FuncSig` に `mono` / `gen` 的なタグを入れて、「この引数は INT」「この引数は ANY_INT」等
-
-  という設計ときれいに噛み合う。
-
-ただしこれは
-
-1. FUNCTION / FUNCTION_BLOCK の構文と AST がある
-2. その interface から `FuncSig` / `FBインタフェース` を起こす
-3. それを env に積んで呼び出し側の型チェックに使う
-
-が揃ってからが本番なので、
-
-> 「ANY型はFunction/FBのVAR_INPUTで使える」対応は、**POU（FUNCTION / FB）サポートを入れてからやる**
-
-のが筋がいいです。
+（着手時は [IN-PROGRESS]、完了時は [DONE] へ更新）
 
 ---
 
-## 2. 次にやると気持ちよくハマる項目リスト
+# Backlog（要約）
 
-今の状態（PROGRAM + Unit + 型環境 + 関数呼び出し + ANY ファミリ(外部シグネチャ対応) + Vary エラー体系）を前提にすると、次の順番がきれいです。
+## (A) POU サポート: FUNCTION / FUNCTION_BLOCK の構文・AST
 
-### (A) 複数 POU サポート（FUNCTION / FUNCTION_BLOCK のパース＆AST）
+- 追加: `Unit` に `[FunctionDecl]`, `[FunctionBlockDecl]`
+- FunctionDecl: 名前、戻り値型、`VAR_INPUT` / `VAR_OUTPUT` / `VAR`、本体文
+- FunctionBlockDecl: 名前、各 VAR セクション（インスタンスメンバ）、本体
+- Parser: `FUNCTION … END_FUNCTION`、`FUNCTION_BLOCK … END_FUNCTION_BLOCK`、まずは `VAR`/`VAR_INPUT` に限定
 
-ここからやるのがいちばんおすすめ。
+## (B) POU のシグネチャを関数環境へ
 
-1. AST 拡張
+- elaboration で TYPE 群から `TypeEnv`、FUNCTION 群から `FuncEnv :: Map Text FuncSig`
+- パラメータ型は `STType`（単相）と `GST`（ANY_*）の両方に対応
+- FUNCTION_BLOCK は将来の FB 呼び出しに備えたインタフェース環境へ
 
-   * `Unit` に
+## (C) FUNCTION 本体の意味解析
 
-     * `[FunctionDecl]`
-     * `[FunctionBlockDecl]`
-     * などを追加。
-   * `FunctionDecl`
+- `VAR_INPUT`/`VAR` を VarEnv に投入し `checkStmt`
+- 戻り値の扱い（関数名への代入=戻り値 など）を規約化
 
-     * 名前
-     * 戻り値型
-     * `VAR_INPUT` / `VAR_OUTPUT` / `VAR` などの宣言群
-     * 本体ステートメント
-   * `FunctionBlockDecl`
+## (D) VAR_INPUT / OUTPUT / IN_OUT の意味論
 
-     * 名前
-     * `VAR_INPUT`, `VAR_OUTPUT`, `VAR` （インスタンスメンバ）
-     * 本体（FB内部コード）
+- `VAR_INPUT`: 呼び出しは式（値渡し）、本体では readonly（代入禁止）
+- `VAR_OUTPUT`: 呼び出しは変数（lvalue）を渡す、本体では書込必須（警告/エラー方針は別途）
+- `VAR_IN_OUT`: 参照渡し（lvalue 必須）、本体から読み書き可
+- まずは INPUT readonly から着手、その後 OUTPUT/IN_OUT と call-site 検査（`ECall` 引数が LValue か等）
 
-2. Parser:
+## (E) ANY / ANY_* を POU 定義でも許可（本命）
 
-   * `FUNCTION ... END_FUNCTION`
-   * `FUNCTION_BLOCK ... END_FUNCTION_BLOCK`
-   * それぞれで VAR セクションを読む（とりあえず `VAR` と `VAR_INPUT` くらいからでOK）
+- ParamTy を単相/ジェネリックで表現（例: `PTMono STType` / `PTGen GST Tag`）
+- `VAR_INPUT` で `ANY_INT` などをパース
+- 既存の ECall のジェネリック束縛ロジックをユーザー定義 FUNCTION にも適用
 
-**ここまでやると、「ユーザー定義 FUNCTION に対して今の関数呼び出しロジックを適用する」道が開く**ので、その次がスムーズ。
+## (F) 定数式評価 (evalConstExpr) の本格導入
 
----
+- `ConstVal` ベースの `evalConstExpr` を仕上げて以下に適用:
+  - `VAR CONSTANT` 初期値
+  - CASE ラベル
+  - 静的添字
+  - 範囲リテラル 等
 
-### (B) 環境構築: POU のシグネチャを関数環境へ
+## (G) FB / PROGRAM 呼び出し（Statement call）と FB インスタンス
 
-(A) ができたら次:
-
-* Unit elaboration の最初で:
-
-  * TYPE 群から `TypeEnv` 構築（今どおり）
-  * FUNCTION 群から
-
-    * `FuncEnv`（`Text -> FuncSig`）を作る
-
-      * パラメータ型が `STType`（+ 将来は `GST`）になる
-  * FUNCTION_BLOCK から
-
-    * 将来用 FB 環境（`Text -> FBInterface` みたいなやつ）を作る
-
-* その `FuncEnv` を今の `Env` に差し込む（もうやってる構造にマージするだけ）。
-
-→ これで
-
-* 外部注入してた built-in シグネチャと
-* 自前で定義した FUNCTION のシグネチャ
-
-を同じ仕組みで扱えるようになる。
+- `myFb();` 形式の呼び出しを `Statement` として扱う
+- `myFb: MyFB;` を状態を持つ構造 + 実行ステップとして扱う
+- 重めのため (A)(F) 後で着手
 
 ---
 
-### (C) FUNCTION 本体の意味解析
+# Notes
 
-環境がそろったら、各 FUNCTION 自体をチェック:
+- ANY 系（`ANY`, `ANY_INT`, …）は原則 FUNCTION / FUNCTION_BLOCK の `VAR_INPUT` 用の型クラス的な位置づけ。実体変数の型ではない。
+- したがって ANY 対応は POU（FUNCTION/FB）のパース・AST が揃ってから適用するのが自然。
 
-* `VAR_INPUT` / `VAR` 宣言を VarEnv に入れて `checkStmt`。
-* 戻り値:
+# TDD フロー（合意）
 
-  * IEC流に「関数名そのものを変数として代入したらそれが戻り値」もサポートするなら、
+- まず該当 `test/*.hs` の末尾に `it` を追加（成功系: `parses …` / 失敗系: `rejects …`）。
+- `stack test :p|:s --test-arguments "-m \"<pattern>\""` で Red を確認。
+- 実装 → Green → ここ（zzz.md）の Next/Backlog を更新。
 
-    * その変数が必ずどこかで代入されているかチェック、などのルールも足せる。
-
-ここまでで「普通の（非ジェネリック）ユーザー定義関数 + 呼び出しの型検査」が完成します。
-
----
-
-### (D) VAR_INPUT/OUTPUT/IN_OUT の意味論
-
-次にやると生きてくるやつ。
-
-* AST に VarSection の種類を付けてある前提で:
-
-  * `VAR_INPUT`:
-
-    * 呼び出し側: 式（RValue）を渡す
-    * 本体側: 読み取り専用（Assign 禁止）
-  * `VAR_OUTPUT`:
-
-    * 呼び出し側: 変数（LValue）を渡す必要がある
-    * 本体側: 書き込む義務（未代入なら警告とか）
-  * `VAR_IN_OUT`:
-
-    * call-by-reference。呼び出し側でも LValue 必須、本体から読み書き可。
-
-まずは `VAR_INPUT` read-only だけからでもOK。
-そのあと output/inout の call-site チェック（`ECall` の引数が LValue かどうか）を追加。
-
-この段階で「FB/PROGRAM 呼び出しの Statement 版」にも道がつながる。
-
----
-
-### (E) ANY / ANY_* を POU 定義にも解禁（本命）
-
-ここで最初に話してくれたやつ。
-
-やること:
-
-1. パラメータの型を `STType` だけでなく:
-
-   ```haskell
-   data ParamTy
-     = PTMono STType
-     | PTGen GST Tag  -- GST = ANY_*, Tag で「同じ型変数」管理
-   ```
-
-   みたいに表現。
-
-2. `FunctionDecl` の VAR_INPUT で `ANY_INT` 等を書けるようにパース。
-
-3. 既に ECall 用に作った
-   「generic param を具体型に束縛してチェックするロジック」
-   をユーザー定義関数にも流用。
-
-ここまで来ると:
-
-* ライブラリ関数
-* ユーザー定義ジェネリック FUNCTION/FB
-
-を同じコードで扱えるようになる。
-
----
-
-### (F) 定数式評価 (evalConstExpr) の本格導入
-
-すでに布石は打ってあるので、ここで:
-
-* `ConstVal` ベースの `evalConstExpr` を完成させて
-
-  * `VAR CONSTANT` の初期値評価
-  * CASE ラベル
-  * 静的添字
-  * 範囲指定 etc.
-
-に使う。
-
-今はピンポイントでやっている定数判定が一箇所に集約されて、仕様追加もしやすくなる。
-
----
-
-### (G) FB / PROGRAM 呼び出し (Statement call) と FB インスタンス
-
-ここまで行けると、次の楽しいやつ:
-
-* `myFb();` 形式の呼び出しを `Statement` として扱う。
-* FB インスタンス（`myFb: MyFB;`）を「stateful struct + 実行ステップ」として扱う。
-
-これはちょっと重いので、上の (A)〜(F) が落ち着いてからで十分。
-
----
-
-## 結論（いま何からやるのが良いか）
-
-今のあなたのコード状況だと、この順がバランス良いです：
-
-1. **(A)** FUNCTION / FUNCTION_BLOCK の AST & Parser
-2. **(B)** Unit elaboration で POU シグネチャを集約して `FuncEnv` に反映
-3. **(C)** ユーザー定義 FUNCTION 本体の型チェック
-4. **(D)** VAR_INPUT / OUTPUT / IN_OUT の意味論（少なくとも INPUT read-only）
-5. そのあとに **(E)** ANY_* を VAR_INPUT に解禁してジェネリック POU 完成
-
-この流れなら、いま構築した Env / ANY / Vary ベースの仕組みをほぼそのまま活かしつつ、段階的に強くしていけます。
