@@ -913,8 +913,26 @@ main = hspec $ do
       runIdent "FUNCTION" `shouldSatisfy` isLeft
     it "rejects FUNCTION_BLOCK as an identifier" $
       runIdent "FUNCTION_BLOCK" `shouldSatisfy` isLeft
-    -- 機能導入の合意用（Red→Greenを段階化）。ここではpendingを置く。
-    it "parses a minimal FUNCTION header and END_FUNCTION (pending)" $
-      pendingWith "TODO: pUnit supports FUNCTION ... END_FUNCTION with VAR/VAR_INPUT"
-    it "rejects FUNCTION missing END_FUNCTION (pending)" $
-      pendingWith "TODO: error recovery for unterminated FUNCTION"
+
+    let runUnit = parse (pUnit <* eof) "<test>"
+    it "parses minimal FUNCTION with VAR_INPUT and END_FUNCTION" $ do
+      let src = T.intercalate "\n"
+                [ "FUNCTION Add : INT"
+                , "VAR_INPUT"
+                , "  x: INT;"
+                , "  y: INT;"
+                , "END_VAR"
+                , "Add := x + y;"
+                , "END_FUNCTION"
+                ]
+      runUnit src `shouldSatisfy` isRight
+
+    it "rejects FUNCTION missing END_FUNCTION" $ do
+      let src = T.intercalate "\n"
+                [ "FUNCTION F : INT"
+                , "VAR_INPUT"
+                , "  x: INT;"
+                , "END_VAR"
+                -- END_FUNCTION is missing
+                ]
+      runUnit src `shouldSatisfy` isLeft
