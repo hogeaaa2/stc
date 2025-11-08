@@ -369,33 +369,6 @@ lvalueRootName = \case
   LField lv _ -> lvalueRootName lv
   LIndex lv _ -> lvalueRootName lv
 
--- 1 つのセレクタを閉区間に変換（値は [v,v]、範囲は [a,b]）
--- intervalOf :: CaseSelector -> Either [SemantDiag] (Int, Int)
--- intervalOf = \case
---   CSValue v -> VRight (v, v)
---   CSRange a b
---     | a <= b -> VRight (a, b)
---     | otherwise -> Left [InvalidCaseRange {low = a, high = b}]
---   CSEnum ty _ -> Left [OpTypeMismatch {op = "CASE", expected = INT, actual = Named ty}]
-
--- -- INT 用：全アームの全セレクタについて「不正な向き」と「重複/交差」を検査
--- checkCaseIntSelectors :: [CaseArm] -> Either [SemantDiag] ()
--- checkCaseIntSelectors arms = do
---   let sels = concatMap (\(CaseArm ss _) -> ss) arms
---   ivals <- traverse intervalOf sels
---   let sorted = sortOn fst ivals
---   if hasOverlap sorted
---     then Left [OverlappingCase]
---     else VRight ()
---   where
---     -- inclusive 区間の重なり検出（隣接 1..3 と 4..5 は OK、1..3 と 3..5 は重なり）
---     hasOverlap :: [(Int, Int)] -> Bool
---     hasOverlap [] = False
---     hasOverlap [_] = False
---     hasOverlap ((_, b1) : (a2, b2) : xs)
---       | a2 <= b1 = True
---       | otherwise = hasOverlap ((a2, b2) : xs)
-
 -- 整数リテラル or その符号付き
 isIntLikeLiteral :: Expr -> Bool
 isIntLikeLiteral = \case
@@ -955,29 +928,6 @@ elabVar env v =
   where
     check = checkExprAssignable env (varType v) (varName v)
     set e' = VRight v {varInit = Just e'}
-
--- check e = do
--- -- 左辺（宣言型）を一応解決しておく（Named 対応）
--- let tgtTy = fromVRight (varType v) (resolveType tenv (varType v))
--- case e of
---   EArrayAgg es -> do
---     eNorm <- checkArrayAggInit tenv env (varName v) tgtTy es
---     VRight v {varInit = Just eNorm}
---   EStructAgg fs -> do
---     eNorm <- checkStructAggInit tenv env (varName v) tgtTy fs
---     VRight v {varInit = Just eNorm}
---   _ -> do
---     -- 特例: 右辺が整数リテラル かつ 左辺が整数/ビット列 → 範囲チェック
---     case (numericLiteralValue e, isIntOrBits tgtTy) of
---       (Just n, True) ->
---         if fitsIn tgtTy n
---           then VRight v
---           else Left [OutOfRange (locVal (varName v)) (spanOfExpr e) tgtTy n]
---       _ -> do
---         ty <- inferType tenv env e
---         if assignCoerce tenv ty (varType v)
---           then VRight v
---           else Left [TypeMismatch (locVal (varName v)) (locSpan (varName v)) (varType v) ty]
 
 -- 右辺 e を「左辺型 tgt に代入可能か」を検査し、必要なら正規化して返す。
 --   * 集成初期化子はここで型に合わせて展開/パディング（既存の checkArray/Struct… を利用）
@@ -1547,39 +1497,6 @@ nominalEq tenv a b =
           case (res a, res b) of
             (VRight r1, VRight r2) -> r1 == r2
             _ -> a == b
-
--- elabProgIn :: TypeEnv -> Program -> Either [SemantDiag] Program
--- elabProgIn tenv (Program name vds body) = do
---   vds' <- resolveVarTypes tenv vds
---   elaborateProgram (Program name vds' body)
-
--- ★ 型環境を受け取って Program を検査
--- elaborateProgramWith :: TypeEnv -> Program -> Either [SemantDiag] Program
--- elaborateProgramWith tenv (Program name (VarDecls vs) body) = do
---   -- 1) 変数の型を解決（Named/Struct内再帰を含む）
---   vsResolved <- traverse resolveVarType vs
-
---   -- 2) 解決済みの型で env を構築（重複チェック）
---   env <- foldl step (VRight M.empty) vsResolved
-
---   -- 3) 初期化（既定値付与＋初期化式の型検査）
---   vs' <- traverse (elabVar env) vsResolved
-
---   -- 4) 本体の文検査
---   mapM_ (checkStmt env) body
---   pure (Program name (VarDecls vs') body)
---   where
---     resolveVarType v = do
---       t' <- resolveType tenv (varType v)
---       pure v {varType = t'}
-
---     step acc v = do
---       m <- acc
---       let n = locVal (varName v)
---           sp = locSpan (varName v)
---       case M.lookup n m of
---         Just (_, _, prev) -> Left [DuplicateVar n prev sp]
---         Nothing -> VRight (M.insert n (varType v, varConst v, sp) m)
 
 evalConstExpr :: Env -> Expr -> Maybe ConstVal
 evalConstExpr env = go
