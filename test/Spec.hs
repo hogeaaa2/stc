@@ -905,3 +905,16 @@ main = hspec $ do
     it "rejects trailing comma in call (parse error)" $ do
       -- 文法的に不正：末尾カンマ
       parseProgram (base <> "x := ADD(1, );\n") `shouldSatisfy` isLeft
+
+  -- Append-only: POU関連の最小テスト（AGENTS.md準拠）
+  describe "POU (FUNCTION / FUNCTION_BLOCK)" $ do
+    let runIdent = parse (identifier <* eof) "<test>"
+    it "rejects FUNCTION as an identifier" $
+      runIdent "FUNCTION" `shouldSatisfy` isLeft
+    it "rejects FUNCTION_BLOCK as an identifier" $
+      runIdent "FUNCTION_BLOCK" `shouldSatisfy` isLeft
+    -- 機能導入の合意用（Red→Greenを段階化）。ここではpendingを置く。
+    it "parses a minimal FUNCTION header and END_FUNCTION (pending)" $
+      pendingWith "TODO: pUnit supports FUNCTION ... END_FUNCTION with VAR/VAR_INPUT"
+    it "rejects FUNCTION missing END_FUNCTION (pending)" $
+      pendingWith "TODO: error recovery for unterminated FUNCTION"
