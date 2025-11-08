@@ -1109,7 +1109,7 @@ pCallArgs =
     namedArg = do
       name <- identifier
       _ <- symbol ":="
-      NamedArg name <$> pExpr
+      CallArgNamed name <$> pExpr
 
     posArg =
-      PosArg <$> pExpr
+      CallArgPos <$> pExpr

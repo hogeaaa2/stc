@@ -26,7 +26,7 @@ type AllErrs =
   '[ AssignToConst,
      AssignToLoopVar,
      BadIndexCount,
-     BadUseOfFunction,
+     WhyDidYouComeHere,
      DuplicateVar,
      IndexOutOfBounds,
      InvalidCaseRange,
@@ -52,6 +52,9 @@ type AllErrs =
      DuplicateArgName,
      PositionalAfterNamed
    ]
+
+elaborateUnit :: Unit -> VEither AllErrs Unit
+elaborateUnit = elaborateUnitWithFuns M.empty
 
 expectParsed :: Text -> (Program -> Expectation) -> Expectation
 expectParsed src k = case parseProgram src of
@@ -1542,21 +1545,21 @@ main = hspec $ do
             \a[k] := 0;\n"
       expectUnitPass src
 
-  xdescribe "Function calls (semantics) with injected signatures" $ do
+  describe "Function calls (semantics) with injected signatures" $ do
     let base = "PROGRAM P\nVAR x: INT; y: INT; b: BOOL; END_VAR\n"
 
         funsSimple :: FuncEnv
         funsSimple =
           M.fromList
-            [ ("ADD", FunSig "ADD" [("x", INT), ("y", INT)] INT),
-              ("SUB", FunSig "SUB" [("x", INT), ("y", INT)] INT),
-              ("NOP", FunSig "NOP" [] INT)
+            [ ("ADD", FuncSig "ADD" [("x", INT), ("y", INT)] INT),
+              ("SUB", FuncSig "SUB" [("x", INT), ("y", INT)] INT),
+              ("NOP", FuncSig "NOP" [] INT)
             ]
 
         funsReal :: FuncEnv
         funsReal =
           M.fromList
-            [ ("MIX", FunSig "MIX" [("a", INT), ("b", REAL)] REAL)
+            [ ("MIX", FuncSig "MIX" [("a", INT), ("b", REAL)] REAL)
             ]
         -- 成功ケース
         ok =

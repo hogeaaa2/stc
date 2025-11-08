@@ -7,10 +7,11 @@
 
 module ST.Semantic
   ( elaborateProgram,
-    elaborateUnit,
+    -- elaborateUnit,
     elaborateUnitWithFuns,
     nominalEq,
     FuncEnv,
+    FuncSig (..),
     DuplicateVar (..),
     UnknownVar (..),
     AssignToConst (..),
@@ -33,7 +34,7 @@ module ST.Semantic
     OutOfRange (..),
     TooManyAggElems (..),
     IndexOutOfBounds (..),
-    BadUseOfFunction (..),
+    WhyDidYouComeHere (..),
     UnknownFunction (..),
     BadArgCount (..),
     ArgTypeMismatch (..),
@@ -60,13 +61,20 @@ type VarEnv = M.Map Text VarInfo
 
 type TypeEnv = M.Map Text STType
 
-type FuncEnv = M.Map Text FunSig
+type FuncEnv = M.Map Text FuncSig
 
 data Env = Env
   { envTypes :: TypeEnv,
     envVars :: VarEnv,
     envFuncs :: FuncEnv
   }
+
+data FuncSig = FuncSig
+  { fsName :: Text,
+    fsArgs :: [(Text, STType)], -- 位置/名前付きの両対応。例: [("x", INT), ("y", INT)]
+    fsRet :: STType
+  }
+  deriving (Eq, Show)
 
 type ExpectedSTType = STType
 
@@ -140,7 +148,7 @@ data TooManyAggElems = TooManyAggElems VariableName Span ExpectedElems ActualEle
 
 data IndexOutOfBounds = IndexOutOfBounds VariableName Span Int RangeFrom RangeTo deriving (Eq, Show)
 
-data BadUseOfFunction = BadUseOfFunction deriving (Eq, Show)
+data WhyDidYouComeHere = WhyDidYouComeHere deriving (Eq, Show)
 
 data UnknownFunction = UnknownFunction FunctionName Span deriving (Eq, Show)
 
@@ -167,7 +175,7 @@ elaborateUnitWithFuns ::
     UnknownStructMember :| e,
     NotAStruct :| e,
     TooManyAggElems :| e,
-    BadUseOfFunction :| e,
+    WhyDidYouComeHere :| e,
     TypeCycle :| e,
     UnknownType :| e,
     UnknownEnumMember :| e,
@@ -177,7 +185,13 @@ elaborateUnitWithFuns ::
     UnknownVar :| e,
     AssignToConst :| e,
     BadIndexCount :| e,
-    NonConstantExpr :| e
+    NonConstantExpr :| e,
+    UnknownFunction :| e,
+    ArgTypeMismatch :| e,
+    UnknownArgName :| e,
+    DuplicateArgName :| e,
+    PositionalAfterNamed :| e,
+    BadArgCount :| e
   ) =>
   FuncEnv ->
   Unit ->
@@ -225,35 +239,6 @@ elaborateUnitWithFuns fenv (Unit tys progs) = do
                 }
               m
 
--- 既存の elaborateUnit は空の関数環境で
-elaborateUnit ::
-  ( DuplicateVar :| e,
-    TypeMismatch :| e,
-    TypeMismatch' :| e,
-    MissingInitializer :| e,
-    AssignToLoopVar :| e,
-    InvalidCaseRange :| e,
-    OverlappingCase :| e,
-    OutOfRange :| e,
-    UnknownStructMember :| e,
-    NotAStruct :| e,
-    TooManyAggElems :| e,
-    BadUseOfFunction :| e,
-    TypeCycle :| e,
-    UnknownType :| e,
-    UnknownEnumMember :| e,
-    NotAnEnum :| e,
-    IndexOutOfBounds :| e,
-    NotAnArray :| e,
-    UnknownVar :| e,
-    AssignToConst :| e,
-    BadIndexCount :| e,
-    NonConstantExpr :| e
-  ) =>
-  Unit ->
-  VEither e Unit
-elaborateUnit = elaborateUnitWithFuns M.empty
-
 elaborateProgram ::
   ( DuplicateVar :| e,
     TypeMismatch :| e,
@@ -266,7 +251,7 @@ elaborateProgram ::
     UnknownStructMember :| e,
     NotAStruct :| e,
     TooManyAggElems :| e,
-    BadUseOfFunction :| e,
+    WhyDidYouComeHere :| e,
     TypeCycle :| e,
     UnknownType :| e,
     UnknownEnumMember :| e,
@@ -276,7 +261,13 @@ elaborateProgram ::
     UnknownVar :| e,
     AssignToConst :| e,
     BadIndexCount :| e,
-    NonConstantExpr :| e
+    NonConstantExpr :| e,
+    UnknownFunction :| e,
+    ArgTypeMismatch :| e,
+    UnknownArgName :| e,
+    DuplicateArgName :| e,
+    PositionalAfterNamed :| e,
+    BadArgCount :| e
   ) =>
   Program ->
   VEither e Program
@@ -295,7 +286,7 @@ elaborateProgramWithTypes ::
     UnknownStructMember :| e,
     NotAStruct :| e,
     TooManyAggElems :| e,
-    BadUseOfFunction :| e,
+    WhyDidYouComeHere :| e,
     TypeCycle :| e,
     UnknownType :| e,
     UnknownEnumMember :| e,
@@ -305,7 +296,13 @@ elaborateProgramWithTypes ::
     UnknownVar :| e,
     AssignToConst :| e,
     BadIndexCount :| e,
-    NonConstantExpr :| e
+    NonConstantExpr :| e,
+    UnknownFunction :| e,
+    ArgTypeMismatch :| e,
+    UnknownArgName :| e,
+    DuplicateArgName :| e,
+    PositionalAfterNamed :| e,
+    BadArgCount :| e
   ) =>
   FuncEnv ->
   Program ->
@@ -432,6 +429,21 @@ spanOfExpr = \case
       Nothing -> spanOfExpr e
   -- リテラルや現状位置を持たないノードは unknown にフォールバック
   _ -> unknownSpan
+
+callArgExpr :: CallArg -> Expr
+callArgExpr = \case
+  CallArgPos e -> e
+  CallArgNamed _name e -> e
+
+callArgName :: CallArg -> Maybe Text
+callArgName = \case
+  CallArgPos _ -> Nothing
+  CallArgNamed i _ -> Just $ locVal i
+
+callArgSpan :: CallArg -> Span
+callArgSpan = \case
+  CallArgPos e -> spanOfExpr e
+  CallArgNamed i _ -> locSpan i
 
 -- lookupByName :: Text -> [(Identifier, STType)] -> Maybe STType
 -- lookupByName n = fmap snd . find (\(i, _) -> locVal i == n)
@@ -641,7 +653,7 @@ arrayCapacity = product . fmap (\(ArrRange lo hi) -> hi - lo + 1)
 
 inferType ::
   forall e.
-  ( BadUseOfFunction :| e,
+  ( WhyDidYouComeHere :| e,
     IndexOutOfBounds :| e,
     NotAnArray :| e,
     NotAnEnum :| e,
@@ -651,7 +663,13 @@ inferType ::
     UnknownStructMember :| e,
     UnknownType :| e,
     UnknownVar :| e,
-    TypeMismatch' :| e
+    TypeMismatch' :| e,
+    ArgTypeMismatch :| e,
+    UnknownFunction :| e,
+    UnknownArgName :| e,
+    DuplicateArgName :| e,
+    PositionalAfterNamed :| e,
+    BadArgCount :| e
   ) =>
   Env ->
   Expr ->
@@ -772,8 +790,37 @@ inferType env = \case
   ELDATE _ -> VRight LDATE
   EDT _ -> VRight DT
   ELDT _ -> VRight LDT
-  EArrayAgg _ -> VEither.fromLeft BadUseOfFunction
-  EStructAgg _ -> VEither.fromLeft BadUseOfFunction
+  EArrayAgg _ -> VEither.fromLeft WhyDidYouComeHere
+  EStructAgg _ -> VEither.fromLeft WhyDidYouComeHere
+  ECall fn args -> do
+    let fname = locVal fn
+    case M.lookup fname (envFuncs env) of
+      Nothing ->
+        VEither.fromLeft $
+          UnknownFunction fname (spanOfExpr (ECall fn args))
+      Just (FuncSig _ fsArgs retTy) -> do
+        let paramCount = length fsArgs
+            nameToIx =
+              M.fromList (zip (map fst fsArgs) [0 ..])
+        orderedArgs <- assignArgs fname nameToIx paramCount args
+
+        -- orderedArgs は [CallArg] 長さ paramCount
+        forM_ (zip3 [1 ..] fsArgs orderedArgs) $
+          \(i, (_pName, pTy), carg) -> do
+            let argE = callArgExpr carg
+                mbNam = callArgName carg
+            argTy <- inferType env argE
+            unless (assignCoerce (envTypes env) argTy pTy) $
+              VEither.fromLeft $
+                ArgTypeMismatch
+                  fname
+                  mbNam
+                  i
+                  pTy
+                  argTy
+                  (spanOfExpr argE)
+
+        VRight retTy
   where
     eqLike ta tb =
       if nominalEq (envTypes env) ta tb
@@ -886,6 +933,56 @@ inferType env = \case
         _ | isBitString ta && ta == tb -> VRight ta
         _ -> VEither.fromLeft $ TypeMismatch' tb0
 
+assignArgs ::
+  ( UnknownArgName :| e,
+    DuplicateArgName :| e,
+    PositionalAfterNamed :| e,
+    BadArgCount :| e
+  ) =>
+  Text -> -- 関数名（診断用）
+  M.Map Text Int -> -- pname -> index
+  Int -> -- パラメータ数
+  [CallArg] -> -- 実引数
+  VEither e [CallArg]
+assignArgs fname nameToIx paramCount args = go 0 False M.empty args
+  where
+    actualCount = length args
+    go nextPos seenNamed acc = \case
+      -- 引数をすべて消費したタイミングで「足りてるか？」判定
+      [] ->
+        if M.size acc == paramCount
+          then VRight $ map snd $ M.toList acc
+          else
+            VEither.fromLeft $
+              BadArgCount fname (callArgSpan $ acc M.! M.size acc) paramCount actualCount
+      (c : cs) ->
+        case c of
+          -- 位置引数
+          CallArgPos e
+            | seenNamed ->
+                VEither.fromLeft $
+                  PositionalAfterNamed fname (spanOfExpr e)
+            | nextPos >= paramCount ->
+                VEither.fromLeft $
+                  BadArgCount fname (callArgSpan c) paramCount actualCount
+            | otherwise ->
+                go (nextPos + 1) seenNamed (M.insert nextPos c acc) cs
+          -- 名前付き引数
+          CallArgNamed ident _ -> do
+            let nmTxt = locVal ident
+            ix <-
+              case M.lookup nmTxt nameToIx of
+                Nothing ->
+                  VEither.fromLeft $
+                    UnknownArgName fname nmTxt (locSpan ident)
+                Just i -> VRight i
+
+            when (M.member ix acc) $
+              VEither.fromLeft $
+                DuplicateArgName fname nmTxt (locSpan ident)
+
+            go nextPos True (M.insert ix c acc) cs
+
 -- 左辺の“ベース変数”を取り出す（const/存在チェック用）
 baseIdent :: LValue -> Identifier
 baseIdent = \case
@@ -902,13 +999,19 @@ lvalueType ::
     UnknownStructMember :| e,
     NotAStruct :| e,
     BadIndexCount :| e,
-    BadUseOfFunction :| e,
+    WhyDidYouComeHere :| e,
     TypeCycle :| e,
     UnknownType :| e,
     UnknownEnumMember :| e,
     NotAnEnum :| e,
     NotAnArray :| e,
-    IndexOutOfBounds :| e
+    IndexOutOfBounds :| e,
+    ArgTypeMismatch :| e,
+    UnknownFunction :| e,
+    UnknownArgName :| e,
+    DuplicateArgName :| e,
+    PositionalAfterNamed :| e,
+    BadArgCount :| e
   ) =>
   Env ->
   STType ->
@@ -958,7 +1061,7 @@ lvalueType env ty = \case
             Nothing -> pure ()
         pure elTy
       _ -> VEither.fromLeft $ TypeMismatch' tRes
-  LIndex _ _ -> VEither.fromLeft BadUseOfFunction
+  LIndex _ _ -> VEither.fromLeft WhyDidYouComeHere
 
 -- 1変数の意味解析：型チェック & 既定初期化付与
 elabVar ::
@@ -967,7 +1070,7 @@ elabVar ::
     OutOfRange :| e,
     TypeMismatch :| e,
     TooManyAggElems :| e,
-    BadUseOfFunction :| e,
+    WhyDidYouComeHere :| e,
     TypeCycle :| e,
     UnknownType :| e,
     MissingInitializer :| e,
@@ -976,7 +1079,13 @@ elabVar ::
     NotAnEnum :| e,
     IndexOutOfBounds :| e,
     NotAnArray :| e,
-    UnknownVar :| e
+    UnknownVar :| e,
+    UnknownFunction :| e,
+    ArgTypeMismatch :| e,
+    UnknownArgName :| e,
+    DuplicateArgName :| e,
+    PositionalAfterNamed :| e,
+    BadArgCount :| e
   ) =>
   Env -> Variable -> VEither e Variable
 elabVar env v =
@@ -1033,9 +1142,15 @@ checkExprAssignable ::
     IndexOutOfBounds :| e,
     NotAnArray :| e,
     UnknownVar :| e,
-    BadUseOfFunction :| e,
+    WhyDidYouComeHere :| e,
     NotAStruct :| e,
-    UnknownStructMember :| e
+    UnknownStructMember :| e,
+    UnknownFunction :| e,
+    ArgTypeMismatch :| e,
+    UnknownArgName :| e,
+    DuplicateArgName :| e,
+    PositionalAfterNamed :| e,
+    BadArgCount :| e
   ) =>
   Env ->
   -- | tgt: 左辺の期待型（宣言型）
@@ -1080,14 +1195,20 @@ checkArrayAggInit ::
     IndexOutOfBounds :| e,
     NotAnArray :| e,
     UnknownVar :| e,
-    BadUseOfFunction :| e,
+    WhyDidYouComeHere :| e,
     OutOfRange :| e,
     TypeMismatch :| e,
     TooManyAggElems :| e,
     TypeCycle :| e,
     UnknownType :| e,
     NotAStruct :| e,
-    UnknownStructMember :| e
+    UnknownStructMember :| e,
+    UnknownFunction :| e,
+    ArgTypeMismatch :| e,
+    UnknownArgName :| e,
+    DuplicateArgName :| e,
+    PositionalAfterNamed :| e,
+    BadArgCount :| e
   ) =>
   Env ->
   Identifier -> -- 変数名（診断用）
@@ -1128,7 +1249,7 @@ checkStructAggInit ::
     OutOfRange :| e,
     TypeMismatch :| e,
     TooManyAggElems :| e,
-    BadUseOfFunction :| e,
+    WhyDidYouComeHere :| e,
     TypeCycle :| e,
     UnknownType :| e,
     TypeMismatch' :| e,
@@ -1136,7 +1257,13 @@ checkStructAggInit ::
     NotAnEnum :| e,
     IndexOutOfBounds :| e,
     NotAnArray :| e,
-    UnknownVar :| e
+    UnknownVar :| e,
+    UnknownFunction :| e,
+    ArgTypeMismatch :| e,
+    UnknownArgName :| e,
+    DuplicateArgName :| e,
+    PositionalAfterNamed :| e,
+    BadArgCount :| e
   ) =>
   Env ->
   Identifier ->
@@ -1188,7 +1315,7 @@ checkStructAggInit env varId tgtTy pairs = do
           Nothing ->
             case defaultInitWithTypes (envTypes env) fTy of
               Just defE -> pure (nm, defE)
-              Nothing -> VEither.fromLeft BadUseOfFunction -- pure (nm, EDefault) -- 必要に応じてポリシーを
+              Nothing -> VEither.fromLeft WhyDidYouComeHere -- pure (nm, EDefault) -- 必要に応じてポリシーを
 
       -- 4) 正規化済みの集成初期化を返す（フィールドは定義順で並べる）
       pure (EStructAgg filled)
@@ -1204,137 +1331,6 @@ checkStructAggInit env varId tgtTy pairs = do
 --         | k `Set.member` s = Just k
 --         | otherwise = go (Set.insert k s) ks
 
--- checkStructAggInit tenv env vname tgtTy0 fs = do
---   tgtTy <- resolveType tenv tgtTy0
---   case tgtTy of
---     Struct declFields -> do
---       let declMap = M.fromList [(locVal f, (f, ty)) | (f, ty) <- declFields]
-
---       -- 未知フィールド検査
---       forM_ fs $ \(fname, _) ->
---         when (M.notMember (locVal fname) declMap) $
---           Left [TypeMismatch (locVal vname) (locSpan vname) tgtTy0 tgtTy]
-
---       -- 宣言順に正規化：指定があればそれを、無ければ既定値
---       norm <- forM declFields $ \(dfName, dfTy) -> do
---         case findInitByText (locVal dfName) fs of
---           Just (_, e) -> do
---             _ <- checkExprAssignable tenv env dfTy vname e
---             pure (dfName, e)
---           Nothing ->
---             case defaultInitWithTypes tenv dfTy of
---               Just de -> pure (dfName, de)
---               Nothing -> pure (dfName, fallbackZero dfTy)
---       VRight (EStructAgg norm)
---     _ -> Left [TypeMismatch (locVal vname) (locSpan vname) (Struct []) tgtTy]
---   where
---     findInitByText :: Text -> [(Identifier, Expr)] -> Maybe (Identifier, Expr)
---     findInitByText k = find (\(i, _) -> locVal i == k)
-
---     fallbackZero :: STType -> Expr
---     fallbackZero t
---       | isIntOrBits t = EINT 0
---       | t == BOOL = EBOOL False
---       | otherwise = EINT 0
-
--- 既存: assignCoerce, inferType, lvalueType, spanOfExpr, locVal/locSpan などを流用
-
--- elabVar を「型に応じた初期化子の精査＆補完」を挟む形に拡張
--- elabVar :: TypeEnv -> Env -> Variable -> Either [SemantDiag] Variable
--- elabVar tenv env v =
---   case (varConst v, varInit v) of
---     (True, Nothing) -> Left [MissingInitializer (locVal (varName v)) (locSpan (varName v))]
---     (True, Just e) -> do
---       e' <- checkInit tenv env (varName v) (varType v) e
---       VRight v {varInit = Just e'}
---     (False, Nothing) ->
---       case defaultInitWithTypes tenv (varType v) of
---         Just e0 -> VRight v {varInit = Just e0}
---         Nothing -> VRight v
---     (False, Just e) -> do
---       e' <- checkInit tenv env (varName v) (varType v) e
---       VRight v {varInit = Just e'}
-
--- ★ 初期化子の検査＆必要なら補完して式を返す
--- checkInit ::
---   TypeEnv ->
---   Env ->
---   Identifier ->
---   STType ->
---   Expr ->
---   Either [SemantDiag] Expr
--- checkInit tenv env vName ty e = do
---   ty' <- VRight =<< resolveType tenv ty
---   case (ty', e) of
---     -- 構造体: 不足は既定値で補完、未知/重複はエラー、型は各フィールドで検査
---     (Struct fs, EStructAgg kvs) -> do
---       let schema = M.fromListWith (\_ _ -> error "dup") [(locVal f, (f, t)) | (f, t) <- fs]
---           seen = Set.fromList (map (locVal . fst) kvs)
---           -- 未知フィールド検出
---           unknowns = [(i, locSpan i) | (i, _) <- kvs, M.notMember (locVal i) schema]
---       unless (null unknowns) $
---         Left [UnknownField {fName = locVal i, fWhere = sp, baseType = ty'} | (i, sp) <- unknowns]
---       -- 各与えられたフィールドを型チェック
---       checkedGiven <- forM kvs $ \(i, ex) -> do
---         let (_, fty) = schema M.! locVal i
---         ex' <- checkAssignable tenv env fty ex
---         pure (i, ex')
---       -- 欠落フィールドを既定値で補完
---       let missing = [(f, fty) | (f, fty) <- fs, Set.notMember (locVal f) seen]
---       filled <- forM missing $ \(f, fty) ->
---         case defaultInitWithTypes tenv fty of
---           Just e0 -> VRight (f, e0)
---           Nothing -> VRight (f, EINT 0) -- 最低限のフォールバック（基本来ない想定）
---       pure $ EStructAgg (checkedGiven ++ filled)
-
---     -- 構造体型なのに構造体集成でない
---     (Struct _, other) -> do
---       t <- inferType tenv env other
---       if nominalEq tenv ty' t then VRight other else Left [TypeMismatch (locVal vName) (spanOfExpr other) ty' t]
-
---     -- 配列: 個数超過はエラー、個数不足は既定値で埋める。要素ごとに型検査
---     (Array rs elTy, EArrayAgg es) -> do
---       let cap = arrayCapacity rs
---       when (length es > cap) $
---         Left
---           [ TooManyAggElems
---               { dName = locVal vName,
---                 dWhere = spanOfExpr e,
---                 expectedElems = cap,
---                 actualElems = length es
---               }
---           ]
---       es' <- traverse (checkAssignable tenv env elTy) es
---       let need = cap - length es'
---       tailFill <-
---         if need <= 0
---           then pure []
---           else case defaultInitWithTypes tenv elTy of
---             Just e0 -> pure (replicate need e0)
---             Nothing -> pure (replicate need (EINT 0))
---       pure $ EArrayAgg (es' ++ tailFill)
-
---     -- 配列型なのに配列集成でない
---     (Array _ _, other) -> do
---       t <- inferType tenv env other
---       if nominalEq tenv ty' t then VRight other else Left [TypeMismatch (locVal vName) (spanOfExpr other) ty' t]
-
---     -- それ以外は従来どおり（暗黙変換を許す）
---     (_, other) -> checkAssignable tenv env ty' other
-
--- 要素/式が目標型に代入可能か検査し、必要なら許容（暗黙変換OKのときは VRight ()）
--- checkAssignable ::
---   TypeEnv ->
---   Env ->
---   STType ->
---   Expr ->
---   Either [SemantDiag] Expr
--- checkAssignable tenv env target expr = do
---   actual <- inferType tenv env expr
---   if assignCoerce tenv actual target
---     then VRight expr
---     else Left [OpTypeMismatch {op = ":=", expected = target, actual = actual}]
-
 -- 本体の文チェック
 checkStmt ::
   forall e.
@@ -1349,14 +1345,20 @@ checkStmt ::
     UnknownStructMember :| e,
     NotAStruct :| e,
     BadIndexCount :| e,
-    BadUseOfFunction :| e,
+    WhyDidYouComeHere :| e,
     TypeCycle :| e,
     UnknownType :| e,
     UnknownEnumMember :| e,
     NotAnEnum :| e,
     NotAnArray :| e,
     IndexOutOfBounds :| e,
-    NonConstantExpr :| e
+    NonConstantExpr :| e,
+    UnknownFunction :| e,
+    ArgTypeMismatch :| e,
+    UnknownArgName :| e,
+    DuplicateArgName :| e,
+    PositionalAfterNamed :| e,
+    BadArgCount :| e
   ) =>
   Env ->
   Statement ->

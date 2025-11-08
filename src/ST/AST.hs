@@ -22,7 +22,6 @@ module ST.AST
     TimeOfDay (..),
     DateTime (..),
     ConstVal (..),
-    FunSig (..),
     CallArg (..),
   )
 where
@@ -238,17 +237,10 @@ data CaseSelector
 data CaseArm = CaseArm [CaseSelector] [Statement] -- selectors : stmts ;
   deriving (Eq, Show)
 
-data FunSig = FunSig
-  { fsName :: Text,
-    fsParams :: [(Text, STType)], -- 位置/名前付きの両対応。例: [("x", INT), ("y", INT)]
-    fsResult :: STType
-  }
-  deriving (Eq, Show)
-
 -- 関数呼び出しの引数:
 --   Inc(1, 2)
 --   Inc(x := 1, y := 2)
 data CallArg
-  = PosArg Expr -- 位置引数
-  | NamedArg Identifier Expr -- 名前付き引数
+  = CallArgPos Expr -- 位置引数
+  | CallArgNamed Identifier Expr -- 名前付き引数
   deriving (Eq, Show)
