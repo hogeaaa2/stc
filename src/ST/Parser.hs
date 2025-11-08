@@ -128,10 +128,59 @@ identifier = withSpan $ lexeme $ do
       pure $ T.cons us (T.singleton c)
 
 pUnit :: Parser Unit
-pUnit = do
-  tys <- many pTypeBlock
-  prg <- pProgram
-  pure (Unit (concat tys) [prg])
+pUnit =
+  -- Case 1: TYPE* then PROGRAM (existing behavior)
+  ( do
+      tys <- many pTypeBlock
+      prg <- pProgram
+      pure (Unit (concat tys) [prg])
+  )
+    <|>
+  -- Case 2: One or more FUNCTION/FB declarations only (accept, ignore bodies)
+  ( do
+      _ <- some (try pFunctionDeclDummy <|> try pFunctionBlockDeclDummy)
+      pure (Unit [] [])
+  )
+
+-- Minimal FUNCTION parser (dummy): parses header/VAR sections and optional END_FUNCTION.
+-- The body is skipped until END_FUNCTION, next top-level token, or EOF.
+pFunctionDeclDummy :: Parser ()
+pFunctionDeclDummy = lexeme $ do
+  _ <- symbol "FUNCTION"
+  _fname <- identifier
+  _ <- symbol ":"
+  _retTy <- pSTType
+  -- zero or more VAR sections we currently support (at least VAR_INPUT)
+  _ <- many (try (pVarSection "VAR_INPUT") <|> try (pVarSection "VAR") <|> try (pVarSection "VAR_TEMP"))
+  -- Skip body until END_FUNCTION, next top-level, or EOF
+  _ <- manyTill anySingle (void (lookAhead (symbol "END_FUNCTION")) <|> lookAheadTop <|> eof)
+  -- Consume optional END_FUNCTION if present
+  _ <- optional (symbol "END_FUNCTION")
+  pure ()
+
+-- Minimal FUNCTION_BLOCK parser (dummy)
+pFunctionBlockDeclDummy :: Parser ()
+pFunctionBlockDeclDummy = lexeme $ do
+  _ <- symbol "FUNCTION_BLOCK"
+  _fbname <- identifier
+  _ <- many (try (pVarSection "VAR_INPUT") <|> try (pVarSection "VAR") <|> try (pVarSection "VAR_TEMP"))
+  -- Skip body until END_FUNCTION_BLOCK, next top-level, or EOF
+  _ <- manyTill anySingle (void (lookAhead (symbol "END_FUNCTION_BLOCK")) <|> lookAheadTop <|> eof)
+  _ <- optional (symbol "END_FUNCTION_BLOCK")
+  pure ()
+
+-- Recognize sync points for top-level constructs
+lookAheadTop :: Parser ()
+lookAheadTop =
+  void . lookAhead $
+    choice [symbol "PROGRAM", symbol "TYPE", symbol "FUNCTION", symbol "FUNCTION_BLOCK"]
+
+-- Generic VAR section used inside FUNCTION/FB (e.g., VAR_INPUT, VAR)
+pVarSection :: Text -> Parser [Variable]
+pVarSection kwd = lexeme $ do
+  _ <- symbol kwd
+  vs <- manyTill (pVariable False) (symbol "END_VAR")
+  pure vs
 
 pStmt :: Parser Statement
 pStmt = withRecovery recover pStmtCore

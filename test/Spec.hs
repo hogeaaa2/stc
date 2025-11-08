@@ -1,4 +1,4 @@
-{-# LANGUAGE LambdaCase #-}
+﻿{-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE OverloadedStrings #-}
 
 import Control.Monad (forM_)
@@ -913,6 +913,10 @@ main = hspec $ do
       runIdent "FUNCTION" `shouldSatisfy` isLeft
     it "rejects FUNCTION_BLOCK as an identifier" $
       runIdent "FUNCTION_BLOCK" `shouldSatisfy` isLeft
+    it "rejects END_FUNCTION as an identifier" $
+      runIdent "END_FUNCTION" `shouldSatisfy` isLeft
+    it "rejects END_FUNCTION_BLOCK as an identifier" $
+      runIdent "END_FUNCTION_BLOCK" `shouldSatisfy` isLeft
 
     let runUnit = parse (pUnit <* eof) "<test>"
     it "parses minimal FUNCTION with VAR_INPUT" $ do
@@ -938,4 +942,29 @@ main = hspec $ do
                 "END_VAR"
                 -- END_FUNCTION is missing
               ]
-      runUnit src `shouldSatisfy` isLeft
+      runUnit src `shouldSatisfy` isRight
+
+    it "parses minimal FUNCTION_BLOCK with VAR_INPUT" $ do
+      let src =
+            T.intercalate
+              "\n"
+              [ "FUNCTION_BLOCK FB",
+                "VAR_INPUT",
+                "  x: INT;",
+                "  y: INT;",
+                "END_VAR",
+                "(* body could be here *)"
+              ]
+      runUnit src `shouldSatisfy` isRight
+
+    it "accepts FUNCTION_BLOCK missing END_FUNCTION_BLOCK" $ do
+      let src =
+            T.intercalate
+              "\n"
+              [ "FUNCTION_BLOCK FB2",
+                "VAR_INPUT",
+                "  x: INT;",
+                "END_VAR"
+                -- END_FUNCTION_BLOCK is missing
+              ]
+      runUnit src `shouldSatisfy` isRight
