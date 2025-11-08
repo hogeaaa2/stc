@@ -10,6 +10,8 @@ module ST.Semantic
     nominalEq,
     FuncEnv,
     FuncSig (..),
+    SigTy (..),
+    TVarId (..),
     DuplicateVar (..),
     UnknownVar (..),
     AssignToConst (..),
@@ -61,6 +63,11 @@ type TypeEnv = M.Map Text STType
 
 type FuncEnv = M.Map Text FuncSig
 
+type TVSubst = M.Map TVarId STType
+
+newtype TVarId = TV Int
+  deriving (Eq, Ord, Show)
+
 data Env = Env
   { envTypes :: TypeEnv,
     envVars :: VarEnv,
@@ -69,9 +76,15 @@ data Env = Env
 
 data FuncSig = FuncSig
   { fsName :: Text,
-    fsArgs :: [(Text, STType)], -- 位置/名前付きの両対応。例: [("x", INT), ("y", INT)]
-    fsRet :: STType
+    fsArgs :: [(Text, SigTy)], -- 位置/名前付きの両対応。例: [("x", INT), ("y", INT)]
+    fsRet :: SigTy
   }
+  deriving (Eq, Show)
+
+-- シグネチャ上の「パラメータ/戻り値の型」
+data SigTy
+  = SigMono STType -- 通常の具体型
+  | SigGen GST TVarId -- ANY_* 制約 + 型変数
   deriving (Eq, Show)
 
 type ExpectedSTType = STType
@@ -562,7 +575,7 @@ inferType env = \case
         Just _ -> goStruct fld e
         Nothing ->
           -- 変数ではなかったので“型名か？”を判定
-          case resolveType (envTypes env) (Named vId) :: VEither e STType of
+          case resolveType @e (envTypes env) (Named vId) of
             VRight (Enum ctors) ->
               if any ((== locVal fld) . locVal . fst) ctors
                 then VRight (Named vId) -- 列挙は Named を返す（A-4/a）
@@ -622,33 +635,63 @@ inferType env = \case
   EStructAgg _ -> VEither.fromLeft WhyDidYouComeHere
   ECall fn args -> do
     let fname = locVal fn
-    case M.lookup fname (envFuncs env) of
-      Nothing ->
-        VEither.fromLeft $
-          UnknownFunction fname (spanOfExpr (ECall fn args))
-      Just (FuncSig _ fsArgs retTy) -> do
-        let paramCount = length fsArgs
-            nameToIx =
-              M.fromList (zip (map fst fsArgs) [0 ..])
-        orderedArgs <- assignArgs fname nameToIx paramCount args
+        fspan = locSpan fn
+        tenv = envTypes env
 
-        -- orderedArgs は [CallArg] 長さ paramCount
-        forM_ (zip3 [1 ..] fsArgs orderedArgs) $
-          \(i, (_pName, pTy), carg) -> do
+    FuncSig _ fsArgs fsRet <-
+      case M.lookup fname (envFuncs env) of
+        Nothing -> VEither.fromLeft $ UnknownFunction fname fspan
+        Just sig' -> pure sig'
+
+    let paramCount = length fsArgs
+        nameToIx = M.fromList (zip (map fst fsArgs) [0 ..])
+
+    -- 名前付き/位置引数を正規化して、param順のリストに
+    orderedArgs <- assignArgs fname nameToIx paramCount args
+    -- orderedArgs :: [CallArg], length == paramCount
+
+    -- 型変数束縛を集めながら各引数チェック
+    subst <-
+      foldM
+        ( \subst (i, (_pName, pSig), carg) -> do
             let argE = callArgExpr carg
-                mbNam = callArgName carg
+                mbName = callArgName carg
+                spArg = spanOfExpr argE
+                pos = i -- 1-based position
             argTy <- inferType env argE
-            unless (assignCoerce (envTypes env) argTy pTy) $
-              VEither.fromLeft $
-                ArgTypeMismatch
-                  fname
-                  mbNam
-                  i
-                  pTy
-                  argTy
-                  (spanOfExpr argE)
 
-        VRight retTy
+            case pSig of
+              -- 具体型パラメータ: これまで通り assignCoerce
+              SigMono expectedTy -> do
+                unless (assignCoerce tenv argTy expectedTy) $
+                  VEither.fromLeft $
+                    ArgTypeMismatch fname mbName pos expectedTy argTy spArg
+                pure subst
+
+              -- ANY_* パラメータ
+              SigGen gst tv -> do
+                ok <- gstMember tenv argTy gst
+                unless ok $
+                  VEither.fromLeft $
+                    ArgTypeMismatch fname mbName pos argTy argTy spArg
+
+                case M.lookup tv subst of
+                  -- まだ束縛されてない: この引数型で束縛
+                  Nothing ->
+                    pure (M.insert tv argTy subst)
+                  -- 既に束縛あり: 名目同値チェック
+                  Just boundTy ->
+                    if nominalEq tenv boundTy argTy
+                      then pure subst
+                      else
+                        VEither.fromLeft $
+                          ArgTypeMismatch fname mbName pos boundTy argTy spArg
+        )
+        M.empty
+        (zip3 [1 ..] fsArgs orderedArgs)
+
+    -- 束縛済み型変数に従って戻り値 SigTy を具体型に落とす
+    instantiateSigTy tenv subst fsRet
   where
     eqLike ta tb =
       if nominalEq (envTypes env) ta tb
@@ -726,7 +769,7 @@ inferType env = \case
 
     goStruct fld base = do
       tr <- inferType env base
-      case resolveType (envTypes env) tr :: VEither e STType of
+      case resolveType @e (envTypes env) tr of
         VRight (Struct fs) ->
           case lookup (locVal fld) [(locVal n, t) | (n, t) <- fs] of
             Just t -> VRight t
@@ -735,7 +778,7 @@ inferType env = \case
         _ -> VEither.fromLeft $ NotAStruct (locSpan fld) tr
 
     resolvePrim :: TypeEnv -> STType -> STType
-    resolvePrim tenv' t = case resolveType tenv' t :: VEither e STType of
+    resolvePrim tenv' t = case resolveType @e tenv' t of
       VRight u -> u
       VLeft _ -> t
 
@@ -865,7 +908,7 @@ lvalueType env ty = \case
       _ -> VEither.fromLeft $ NotAStruct (locSpan fld) tr
   LIndex base idxs@(idx : _) -> do
     tBase <- lvalueType env INT base -- 第3引数は未使用なら何でもOK
-    tRes <- resolveType (envTypes env) tBase :: VEither e STType
+    tRes <- resolveType @e (envTypes env) tBase
     case tRes of
       Array ranges elTy -> do
         when (length idxs /= length ranges) $
@@ -967,7 +1010,7 @@ checkExprAssignable ::
   -- | 正規化済みの式（初期化子なら整形後の Expr）
   VEither e Expr
 checkExprAssignable env tgt who e0 = do
-  let tgt' = case resolveType (envTypes env) tgt :: VEither e STType of
+  let tgt' = case resolveType @e (envTypes env) tgt of
         VRight t -> t
         _ -> tgt -- Named 解決
   case e0 of
@@ -1417,7 +1460,7 @@ checkConstDesignator env = go
         _ -> False
 
     isEnumType te tyId =
-      case resolveType te (Named tyId) :: VEither e STType of
+      case resolveType @e te (Named tyId) of
         VRight Enum {} -> True
         _ -> False
 
@@ -1531,3 +1574,63 @@ evalConstExpr env = go
         initE <- viInit vi
         go initE
       _ -> Nothing
+
+-- GST に属するか（Named は解決してから見る）
+gstMember ::
+  forall e.
+  ( TypeCycle :| e,
+    UnknownType :| e
+  ) =>
+  TypeEnv -> STType -> GST -> VEither e Bool
+gstMember tenv ty0 gst = do
+  ty <- case resolveType @e tenv ty0 of
+    VRight t -> pure t
+    VLeft _ -> pure ty0 -- 解決失敗時は生値で判定（だいたい来ない想定）
+  pure $ case gst of
+    GSTAny -> isElementary ty
+    GSTAnyInt -> ty `elem` [SINT, INT, DINT, LINT, USINT, UINT, UDINT, ULINT]
+    GSTAnyNum -> ty `elem` [SINT, INT, DINT, LINT, USINT, UINT, UDINT, ULINT, REAL, LREAL]
+    GSTAnyReal -> ty `elem` [REAL, LREAL]
+    GSTAnyBit -> ty `elem` [BOOL, BYTE, WORD, DWORD, LWORD]
+    GSTAnyString -> case ty of
+      CHAR -> True
+      WCHAR -> True
+      STRING _ -> True
+      WSTRING _ -> True
+      _ -> False
+    GSTAnyDate -> case ty of
+      DATE -> True
+      TOD -> True
+      DT -> True
+      -- LDATE/LTOD/LDT 等は追加時にここへ
+      _ -> False
+    GSTAnyDuration -> case ty of
+      TIME -> True
+      -- LTIME 追加時にここへ
+      _ -> False
+  where
+    -- 「とりあえず配列/構造体以外」を elementary として扱う素朴版
+    isElementary = \case
+      Struct _ -> False
+      Array _ _ -> False
+      _ -> True
+
+-- SigTy を具体型に落とす
+instantiateSigTy ::
+  TypeEnv -> TVSubst -> SigTy -> VEither e STType
+instantiateSigTy _ _ (SigMono t) = pure t
+instantiateSigTy _tenv subst (SigGen gst tv) =
+  case M.lookup tv subst of
+    Just t -> pure t
+    Nothing -> pure (defaultForGST gst)
+  where
+    -- 未束縛TVに対するデフォルト代表（実際ほぼ来ない想定）
+    defaultForGST = \case
+      GSTAny -> INT
+      GSTAnyInt -> INT
+      GSTAnyNum -> INT
+      GSTAnyReal -> REAL
+      GSTAnyBit -> BOOL
+      GSTAnyString -> STRING Nothing
+      GSTAnyDate -> DATE
+      GSTAnyDuration -> TIME

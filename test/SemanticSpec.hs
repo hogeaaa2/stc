@@ -1563,15 +1563,15 @@ main = hspec $ do
         funsSimple :: FuncEnv
         funsSimple =
           M.fromList
-            [ ("ADD", FuncSig "ADD" [("x", INT), ("y", INT)] INT),
-              ("SUB", FuncSig "SUB" [("x", INT), ("y", INT)] INT),
-              ("NOP", FuncSig "NOP" [] INT)
+            [ ("ADD", FuncSig {fsName = "ADD", fsArgs = [("x", SigMono INT), ("y", SigMono INT)], fsRet = SigMono INT}),
+              ("SUB", FuncSig {fsName = "SUB", fsArgs = [("x", SigMono INT), ("y", SigMono INT)], fsRet = SigMono INT}),
+              ("NOP", FuncSig {fsName = "NOP", fsArgs = [], fsRet = SigMono INT})
             ]
 
         funsReal :: FuncEnv
         funsReal =
           M.fromList
-            [ ("MIX", FuncSig "MIX" [("a", INT), ("b", REAL)] REAL)
+            [ ("MIX", FuncSig {fsName = "MIX", fsArgs = [("a", SigMono INT), ("b", SigMono REAL)], fsRet = SigMono REAL})
             ]
         -- 成功ケース
         ok =
@@ -1640,3 +1640,109 @@ main = hspec $ do
       expectUnitFailWithDetailWithFuns @TypeMismatch funsReal src $
         \(TypeMismatch vname _ expected actual) ->
           vname == "x" && expected == INT && actual == REAL
+
+  describe "Generic ANY-family function calls" $ do
+    let funsAny :: FuncEnv
+        funsAny =
+          M.fromList
+            [ -- ID_INT: IN : ANY_INT -> SAME_TYPE
+              ( "ID_ANY_INT",
+                FuncSig
+                  { fsName = "ID_ANY_INT",
+                    fsArgs = [("IN", SigGen GSTAnyInt (TV 0))],
+                    fsRet = SigGen GSTAnyInt (TV 0)
+                  }
+              ),
+              -- ADD_NUM: X,Y : ANY_NUM (同じ型) -> SAME_TYPE
+              ( "ADD_ANY_NUM",
+                FuncSig
+                  { fsName = "ADD_ANY_NUM",
+                    fsArgs =
+                      [ ("X", SigGen GSTAnyNum (TV 0)),
+                        ("Y", SigGen GSTAnyNum (TV 0))
+                      ],
+                    fsRet = SigGen GSTAnyNum (TV 0)
+                  }
+              ),
+              -- SEL_ANY: G:BOOL, IN0/IN1: ANY (同じ型) -> SAME_TYPE
+              ( "SEL_ANY",
+                FuncSig
+                  { fsName = "SEL_ANY",
+                    fsArgs =
+                      [ ("G", SigMono BOOL),
+                        ("IN0", SigGen GSTAny (TV 0)),
+                        ("IN1", SigGen GSTAny (TV 0))
+                      ],
+                    fsRet = SigGen GSTAny (TV 0)
+                  }
+              ),
+              -- PAIR2: A,B : ANY_INT (別々の型変数) -> BOOL
+              -- 「別 TVar は独立に選べる」をテストする用
+              ( "PAIR2",
+                FuncSig
+                  { fsName = "PAIR2",
+                    fsArgs =
+                      [ ("A", SigGen GSTAnyInt (TV 0)),
+                        ("B", SigGen GSTAnyInt (TV 1))
+                      ],
+                    fsRet = SigMono BOOL
+                  }
+              )
+            ]
+        anyInt = "ANY_INT (ID_ANY_INT) "
+        anyNum = "ANY_NUM (ADD_ANY_NUM) "
+        sel = "ANY (SEL_ANY) "
+    it (anyInt <> "accepts SINT") $
+      expectUnitPassWithFuns
+        funsAny
+        "PROGRAM P\nVAR x: SINT; END_VAR\nx := ID_ANY_INT(x);\n"
+
+    it (anyInt <> "accepts DINT") $
+      expectUnitPassWithFuns
+        funsAny
+        "PROGRAM P\nVAR x: DINT; END_VAR\nx := ID_ANY_INT(x);\n"
+
+    it (anyInt <> "accepts UINT") $
+      expectUnitPassWithFuns
+        funsAny
+        "PROGRAM P\nVAR x: UINT; END_VAR\nx := ID_ANY_INT(x);\n"
+
+    it (anyInt <> "rejects BOOL for ANY_INT")
+      $ expectUnitFailWithDetailWithFuns @ArgTypeMismatch
+        funsAny
+        "PROGRAM P\nVAR b: BOOL; x: INT; END_VAR\nx := ID_ANY_INT(b);\n"
+      $ \(ArgTypeMismatch fname _mbName pos _expTy actTy _sp) ->
+        fname == "ID_ANY_INT"
+          && pos == 1
+          && actTy == BOOL
+
+    it (anyNum <> "accepts INT branches") $
+      expectUnitPassWithFuns
+        funsAny
+        "PROGRAM P\nVAR x: INT; END_VAR\nx := SEL_ANY(TRUE, 1, 2);\n"
+
+    it (sel <> "accepts BOOL branches") $
+      expectUnitPassWithFuns
+        funsAny
+        "PROGRAM P\nVAR b: BOOL; END_VAR\nb := SEL_ANY(FALSE, TRUE, FALSE);\n"
+
+    it (sel <> "rejects mismatched ANY branches (INT vs BOOL)")
+      $ expectUnitFailWithDetailWithFuns @ArgTypeMismatch
+        funsAny
+        "PROGRAM P\nVAR x: INT; END_VAR\nx := SEL_ANY(TRUE, 1, TRUE);\n"
+      $ \(ArgTypeMismatch fname _mbName _pos _expTy actTy _sp) ->
+        fname == "SEL_ANY"
+          && (actTy == BOOL || actTy == INT)
+
+    it ("PAIR2 " <> "allows different int types for different TVars") $
+      expectUnitPassWithFuns
+        funsAny
+        "PROGRAM P\nVAR a: INT; b: DINT; ok: BOOL; END_VAR\nok := PAIR2(a, b);\n"
+
+    it "rejects struct for ID_ANY_INT"
+      $ expectUnitFailWithDetailWithFuns @ArgTypeMismatch
+        funsAny
+        "TYPE R : STRUCT x: INT; END_STRUCT; END_TYPE\n\
+        \PROGRAM P\nVAR r: R; END_VAR\nr.x := ID_ANY_INT(r);\n"
+      $ \(ArgTypeMismatch fname _ _ _ actTy _) ->
+        fname == "ID_ANY_INT" && actTy /= INT

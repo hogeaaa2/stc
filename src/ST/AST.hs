@@ -23,6 +23,7 @@ module ST.AST
     DateTime (..),
     ConstVal (..),
     CallArg (..),
+    GST (..),
   )
 where
 
@@ -243,4 +244,16 @@ data CaseArm = CaseArm [CaseSelector] [Statement] -- selectors : stmts ;
 data CallArg
   = CallArgPos Expr -- 位置引数
   | CallArgNamed Identifier Expr -- 名前付き引数
+  deriving (Eq, Show)
+
+-- ANY_* クラス
+data GST
+  = GSTAny
+  | GSTAnyInt
+  | GSTAnyNum
+  | GSTAnyReal
+  | GSTAnyBit
+  | GSTAnyString
+  | GSTAnyDate
+  | GSTAnyDuration
   deriving (Eq, Show)
