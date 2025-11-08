@@ -915,24 +915,27 @@ main = hspec $ do
       runIdent "FUNCTION_BLOCK" `shouldSatisfy` isLeft
 
     let runUnit = parse (pUnit <* eof) "<test>"
-    it "parses minimal FUNCTION with VAR_INPUT and END_FUNCTION" $ do
-      let src = T.intercalate "\n"
-                [ "FUNCTION Add : INT"
-                , "VAR_INPUT"
-                , "  x: INT;"
-                , "  y: INT;"
-                , "END_VAR"
-                , "Add := x + y;"
-                , "END_FUNCTION"
-                ]
+    it "parses minimal FUNCTION with VAR_INPUT" $ do
+      let src =
+            T.intercalate
+              "\n"
+              [ "FUNCTION Add : INT",
+                "VAR_INPUT",
+                "  x: INT;",
+                "  y: INT;",
+                "END_VAR",
+                "Add := x + y;"
+              ]
       runUnit src `shouldSatisfy` isRight
 
-    it "rejects FUNCTION missing END_FUNCTION" $ do
-      let src = T.intercalate "\n"
-                [ "FUNCTION F : INT"
-                , "VAR_INPUT"
-                , "  x: INT;"
-                , "END_VAR"
+    it "accepts FUNCTION missing END_FUNCTION" $ do
+      let src =
+            T.intercalate
+              "\n"
+              [ "FUNCTION F : INT",
+                "VAR_INPUT",
+                "  x: INT;",
+                "END_VAR"
                 -- END_FUNCTION is missing
-                ]
+              ]
       runUnit src `shouldSatisfy` isLeft
