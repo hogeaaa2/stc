@@ -84,7 +84,7 @@ data FuncSig = FuncSig
 -- シグネチャ上の「パラメータ/戻り値の型」
 data SigTy
   = SigMono STType -- 通常の具体型
-  | SigGen GST TVarId -- ANY_* 制約 + 型変数
+  | SigGen GSTType TVarId -- ANY_* 制約 + 型変数
   deriving (Eq, Show)
 
 type ExpectedSTType = STType
@@ -1581,7 +1581,7 @@ gstMember ::
   ( TypeCycle :| e,
     UnknownType :| e
   ) =>
-  TypeEnv -> STType -> GST -> VEither e Bool
+  TypeEnv -> STType -> GSTType -> VEither e Bool
 gstMember tenv ty0 gst = do
   ty <- case resolveType @e tenv ty0 of
     VRight t -> pure t

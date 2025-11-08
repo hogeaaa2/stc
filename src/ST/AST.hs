@@ -23,7 +23,7 @@ module ST.AST
     DateTime (..),
     ConstVal (..),
     CallArg (..),
-    GST (..),
+    GSTType (..),
   )
 where
 
@@ -247,7 +247,7 @@ data CallArg
   deriving (Eq, Show)
 
 -- ANY_* クラス
-data GST
+data GSTType
   = GSTAny
   | GSTAnyInt
   | GSTAnyNum

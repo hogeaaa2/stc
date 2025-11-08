@@ -1,165 +1,209 @@
-いいね！ここまでで “CASE 強化” 系はやり切れたので、改めて**「仕様として“あるけど未実装”系」**を整理しておくね。重複は避けつつ、粒度は実装単位で分けてある。進める順のおすすめも最後に。
+いい感じのところまで来てます ✨
 
-# 仕様として“あるけど未実装”系（現状まとめ）
-
-## 型・リテラル
-
-* 整数の種類拡張：`SINT, INT, DINT, LINT, USINT, UINT, UDINT, ULINT`
-* ビット文字列型：`BYTE, WORD, DWORD, LWORD`
-* 日時・時間型：`TIME, LTIME, DATE, TIME_OF_DAY (TOD), DATE_AND_TIME (DT)` とそのリテラル（例：`T#1s` など）と比較・加減
-* 文字・ワイド文字：`CHAR, WCHAR`、`'A'` などの文字リテラル
-* ワイド文字列：`WSTRING(n)`（型とリテラル）。今は STRING だけ
-* 基数付き整数リテラル：`2#1010`, `16#FF` など
-* 型付き数値リテラル：`INT#5`, `REAL#1.0`（いまは REAL/LREAL のみ型付きに対応）
-* サブレンジ型：`INT (0..100)` のような上下限付き派生型（チェック含む）
-
-## 演算子・式
-
-* 整数/ビット列に対するビット演算の本実装：`AND/OR/XOR/NOT` を BOOL だけでなく整数・ビット列にも（現状 BOOL を主に扱い）
-* シフト・ローテート：`SHL, SHR, ROL, ROR`
-* 数学/文字列/日時の標準関数（`ABS, SQRT, LEN, CONCAT, LEFT, RIGHT, ADD(TIME, …)` など）※関数呼び出し基盤が必要
-* ANY ファミリ対応：`ANY_INT / ANY_REAL / ANY_NUM / ANY_MAGNITUDE` に基づく演算子の型束縛・昇格（現状は INT↔REAL/LREAL の一部昇格のみ）
-
-## 文字列
-
-* `STRING(n)/WSTRING(n)` の**最大長チェック**（定数初期化やリテラル連結があれば静的に検出）
-* 文字列演算の拡充：`=` `<` `<>` の他、ベンダ関数（`CONCAT` など）を関数コールとして扱う
-
-## 配列・構造体・集成初期化
-
-* 配列/構造体の**集成初期化**：`[1,2,3]`、`(x := 1, y := 2)` のような初期化子
-* **コンパイル時計上チェック**：配列境界が定数でインデクスも定数のとき越境を静的検出
-* 構造体/配列の**デフォルト初期化**（要設計）：全フィールド/要素の既定初期値を合成するかどうかの方針決め
-
-## 列挙体
-
-* **非修飾列挙子の許容**（`Red` だけで型が明確な文脈なら OK にする等）。曖昧解決やパーサの設計が要る
-* 列挙子の**重複明示値**や範囲外値の扱い（今は基本チェックのみ／明示値付けは実装済）
-
-## 文・宣言
-
-* ループ制御・関数系キーワード：`EXIT`（ループ脱出）、`CONTINUE`（実装するなら）、`RETURN`（関数/FB対応時）
-* 追加 VAR セクション：`VAR_INPUT, VAR_OUTPUT, VAR_IN_OUT, VAR_TEMP` 等
-* **関数／関数ブロック／メソッド呼び出し**：呼び出し構文、実引数（位置/名前付き/既定値）、オーバーロード解決、`fb()` 呼び出し
-* **明示的型変換関数**：`TO_INT`, `REAL_TO_LREAL` …（標準/ベンダ関数の一部）
-
-## エラー回復・診断の充実
-
-* すべての主要構文での `registerParseError`/`withRecovery` の適用範囲拡大（現状カバー済みの外側にも波及）
-* CASE の**到達不能腕**検出（先ほどの提案は一旦見送り済）
+質問2つに分けて答えるね。
 
 ---
 
-# すぐ着手しやすい順（おすすめ）
+## 1. ANY型 in VAR_INPUT について
 
-1. **DONE 整数とビット列の型群（SINT〜LINT, BYTE〜LWORD）**
-   　→ 演算子・昇格・リテラル基数やビット演算の布石にもなる。
+認識あってます。
 
-2. **DONE 基数付き整数リテラル（2# / 16# …）**
-   　→ 既存の `pInt` を拡張。型はまず `INT` に寄せ、後で桁幅に応じた型当てに発展可。
+* IEC 61131-3 的には、`ANY`, `ANY_INT`, `ANY_NUM`, … は、
+  **主に FUNCTION / FUNCTION_BLOCK の VAR_INPUT（引数）専用の「型クラス」** として使う想定。
+* 「実体としての変数の型」ではなく、
+  「呼び出し時に具体型でインスタンス化されるパラメータ」の制約。
+* なので今やってる:
 
-3. **DONE ビット演算の整数対応 & -シフト演算（SHL/SHR/ROL/ROR）-**
-   　→ BOOL/整数/ビット列ごとの型規則を整える。優先順位は CODESYS に合わせる。
+  * `GST`（Generic type family）
+  * `FuncSig` に `mono` / `gen` 的なタグを入れて、「この引数は INT」「この引数は ANY_INT」等
 
-4. **DONE CHAR/WCHAR/WSTRING**
-   　→ 既にエスケープ分岐の土台があるので導入しやすい。`$"`/`$'` の扱いを型で切り替え。
+  という設計ときれいに噛み合う。
 
-5. **DONE 配列・構造体の集成初期化**
-   　→ パーサと定数性チェック（VAR CONSTANT での式許容範囲）を一段底上げ。
+ただしこれは
 
-6. **DONE 日付/時間型とリテラル（TIME/TOD/DATE/DT/…）**
-   　→ 比較・加減の最小対応。演算子の ANY_MAGNITUDE へ布石。
+1. FUNCTION / FUNCTION_BLOCK の構文と AST がある
+2. その interface から `FuncSig` / `FBインタフェース` を起こす
+3. それを env に積んで呼び出し側の型チェックに使う
 
-7. **DONE 関数呼び出しの最小実装**（ユーザー定義 or 組み込み 1〜2 個）
-   　→ 以後の機能（`EXPT` 代替・文字列関数等）の足回りが揃う。
+が揃ってからが本番なので、
 
+> 「ANY型はFunction/FBのVAR_INPUTで使える」対応は、**POU（FUNCTION / FB）サポートを入れてからやる**
 
-
----
-
-いい流れできてる！結論から言うと—
-
-**次は「関数呼び出しの“芯”」を先に入れて、そのあとで ANY ファミリ対応（汎用型/オーバーロード解決）に進むのが一番スムーズ。**
-理由は、ANY をちゃんと入れるには“関数解決器（引数照合・制約解決）”の受け皿が必要だから。まずコールの土台を作っておくと、ANY は“土台の拡張”として自然に載せられる。
+のが筋がいいです。
 
 ---
 
-## おすすめ順（短いロードマップ）
+## 2. 次にやると気持ちよくハマる項目リスト
 
-### 0) 先に片付けると後がラクな“小さめタスク”
+今の状態（PROGRAM + Unit + 型環境 + 関数呼び出し + ANY ファミリ(外部シグネチャ対応) + Vary エラー体系）を前提にすると、次の順番がきれいです。
 
-* **静的境界チェックの再開（VAR CONSTANT 評価）**
-  Env に `viConstVal :: Maybe ConstVal` を追加して、`evalConstExpr` を TIME/TOD/DATE/DT/ENUM/整数に対応。
-  → 以前 pending にしたテスト（定数添字の OOB 検出）を復活可能。
-  ＊この評価器は後で CASE などの「定数設計子チェック」にも効く。
+### (A) 複数 POU サポート（FUNCTION / FUNCTION_BLOCK のパース＆AST）
 
-### 1) 関数呼び出しの“芯”（まずは**モノモーフィック**）
+ここからやるのがいちばんおすすめ。
 
-**パーサ & AST**
+1. AST 拡張
 
-* `Expr` に `ECall Name [Arg]`（位置/名前付き）を追加。
-  `Arg = Pos Expr | Named Identifier Expr`。
-* 既存 ST 風の `f(x := 1, y := 2)` をサポート（順不同・重複検出）。
+   * `Unit` に
 
-**セマンティクス**
+     * `[FunctionDecl]`
+     * `[FunctionBlockDecl]`
+     * などを追加。
+   * `FunctionDecl`
 
-* `FunctionEnv` を導入（`Map Text Sig`）。`Sig = [Param] -> RetType`。
-  `Param = { mode :: Input|Output|InOut, name, ty, default :: Maybe Expr }`
-* **照合ルール（ANY なし版）**
+     * 名前
+     * 戻り値型
+     * `VAR_INPUT` / `VAR_OUTPUT` / `VAR` などの宣言群
+     * 本体ステートメント
+   * `FunctionBlockDecl`
 
-  * 命名/位置引数をシグネチャ順に**並べ替え**・**重複禁止**・**不足は default 補完**
-  * `VAR_OUTPUT/VAR_IN_OUT` は **LValue** 必須、`VAR_INPUT` は式で可
-  * 型は `assignCoerce`（今の昇格規則）で判定
-* まずは**モノモーフィック関数のみ**を数個用意して回す（例: `ABS_INT : INT -> INT`, `LIMIT_INT : (INT, INT, INT) -> INT`, `LEN : STRING(n) -> INT` など）。
-  → ここで「戻り値型・引数照合・モード制約・既定値」の骨格を固める。
+     * 名前
+     * `VAR_INPUT`, `VAR_OUTPUT`, `VAR` （インスタンスメンバ）
+     * 本体（FB内部コード）
 
-### 2) ANY ファミリ（汎用型）＋ オーバーロード解決
+2. Parser:
 
-* **ファミリ定義**（例）
-  `ANY_BIT(= BOOL+BYTE/WORD/DWORD/LWORD)`, `ANY_INT`, `ANY_SIGNED`, `ANY_UNSIGNED`, `ANY_NUM(= INT群+REAL/LREAL)`, `ANY_CHAR(= CHAR/WCHAR)`, `ANY_STRING(= STRING/WSTRING)`, `ANY_DATE`, `ANY_TIME`, `ANY_DATE_AND_TIME` …
-  → 既に L の長尺系は後回しでも設計的に拡張可能な形で。
-* **型変数と制約**
-  `α ∈ ANY_INT` みたいな制約を持つ多相シグネチャを表現（`PolySig`）。
-  呼び出し時に**各引数の具体型で α を単相化**して置換。
-  結果型が `α` を含む場合は置換後に具体化（例: `MAX(α, α) -> α`）。
-* **解決アルゴリズム**
+   * `FUNCTION ... END_FUNCTION`
+   * `FUNCTION_BLOCK ... END_FUNCTION_BLOCK`
+   * それぞれで VAR セクションを読む（とりあえず `VAR` と `VAR_INPUT` くらいからでOK）
 
-  1. 候補（同名のモノ/ポリ関数）列挙
-  2. 実引数で**マッチ可能**な候補だけ残す（制約満足 & 暗黙昇格 OK）
-  3. 競合したら“**より具体的**”を優先（例: `SINT` をパラメタ化より `SINT` 専用を優先）
-  4. 一意でなければ曖昧エラー
-* これに合わせて**演算子**も“内部的には同じ仕組み”で扱えるように寄せていくと、型判定の重複が減る（段階的でOK）。
+**ここまでやると、「ユーザー定義 FUNCTION に対して今の関数呼び出しロジックを適用する」道が開く**ので、その次がスムーズ。
 
 ---
 
-## いまのコードに合わせた「やり残し」チェック
+### (B) 環境構築: POU のシグネチャを関数環境へ
 
-* **数値リテラルの初期型付け**
-  `-1` を **SINT** と解釈 → **符号付き→符号なし**の暗黙変換を `assignCoerce` に追加
-  （ANY に入る前にここを整えると、あとが幸せ）
-* **暗黙昇格の表**を一枚に（`canPromote` を拡張）
+(A) ができたら次:
 
-  * INT→REAL/LREAL、REAL→LREAL、SINT→INT、SINT→USINT（範囲内）、等
-  * BITSTRING 同士の扱い（同幅のみ OK は既に対応済み）
-* **定数式評価の拡充**（上の 0)）：CASE セレクタや配列添字に効く
-* **警告レベル**（診断の “error/warn” 区分）
-  以前の話題：`VAR_INPUT` デフォルト値を**警告**で弾く等
-  → これは**後回しでも OK**（内部表現は出来てるのでいつでも足せる）
+* Unit elaboration の最初で:
 
----
+  * TYPE 群から `TypeEnv` 構築（今どおり）
+  * FUNCTION 群から
 
-## 具体的な“最短ルート”提案
+    * `FuncEnv`（`Text -> FuncSig`）を作る
 
-1. `evalConstExpr` を入れて **VAR CONSTANT 添字 OOB** の pending を外す（30〜60分級）。
-2. **ECall + FunctionEnv** を実装（モノモーフィック限定）。最小セットの関数でテストを作成。
-3. **ANY 対応**：
+      * パラメータ型が `STType`（+ 将来は `GST`）になる
+  * FUNCTION_BLOCK から
 
-   * ファミリ membership 関数 `member :: Family -> STType -> Bool`
-   * 型変数代入・解決器
-   * 代表的な組込み（`ABS`, `MAX/MIN`, `SHL/SHR/ROL/ROR`, `LEN`, `CONCAT` など）を ANY 版に置き換え
-4. 演算子の型判定を段階的に**コール解決器に寄せる**（将来的な一貫性のため）
+    * 将来用 FB 環境（`Text -> FBInterface` みたいなやつ）を作る
+
+* その `FuncEnv` を今の `Env` に差し込む（もうやってる構造にマージするだけ）。
+
+→ これで
+
+* 外部注入してた built-in シグネチャと
+* 自前で定義した FUNCTION のシグネチャ
+
+を同じ仕組みで扱えるようになる。
 
 ---
 
-必要なら、ECall の AST/シグネチャ/解決器の**最小骨格**もそのまま落とせる形で出すよ。
-とりあえずは「**関数呼び出しの芯 → ANY**」で進めれば、後戻りなしでキレイに積み上がるはず！
+### (C) FUNCTION 本体の意味解析
+
+環境がそろったら、各 FUNCTION 自体をチェック:
+
+* `VAR_INPUT` / `VAR` 宣言を VarEnv に入れて `checkStmt`。
+* 戻り値:
+
+  * IEC流に「関数名そのものを変数として代入したらそれが戻り値」もサポートするなら、
+
+    * その変数が必ずどこかで代入されているかチェック、などのルールも足せる。
+
+ここまでで「普通の（非ジェネリック）ユーザー定義関数 + 呼び出しの型検査」が完成します。
+
+---
+
+### (D) VAR_INPUT/OUTPUT/IN_OUT の意味論
+
+次にやると生きてくるやつ。
+
+* AST に VarSection の種類を付けてある前提で:
+
+  * `VAR_INPUT`:
+
+    * 呼び出し側: 式（RValue）を渡す
+    * 本体側: 読み取り専用（Assign 禁止）
+  * `VAR_OUTPUT`:
+
+    * 呼び出し側: 変数（LValue）を渡す必要がある
+    * 本体側: 書き込む義務（未代入なら警告とか）
+  * `VAR_IN_OUT`:
+
+    * call-by-reference。呼び出し側でも LValue 必須、本体から読み書き可。
+
+まずは `VAR_INPUT` read-only だけからでもOK。
+そのあと output/inout の call-site チェック（`ECall` の引数が LValue かどうか）を追加。
+
+この段階で「FB/PROGRAM 呼び出しの Statement 版」にも道がつながる。
+
+---
+
+### (E) ANY / ANY_* を POU 定義にも解禁（本命）
+
+ここで最初に話してくれたやつ。
+
+やること:
+
+1. パラメータの型を `STType` だけでなく:
+
+   ```haskell
+   data ParamTy
+     = PTMono STType
+     | PTGen GST Tag  -- GST = ANY_*, Tag で「同じ型変数」管理
+   ```
+
+   みたいに表現。
+
+2. `FunctionDecl` の VAR_INPUT で `ANY_INT` 等を書けるようにパース。
+
+3. 既に ECall 用に作った
+   「generic param を具体型に束縛してチェックするロジック」
+   をユーザー定義関数にも流用。
+
+ここまで来ると:
+
+* ライブラリ関数
+* ユーザー定義ジェネリック FUNCTION/FB
+
+を同じコードで扱えるようになる。
+
+---
+
+### (F) 定数式評価 (evalConstExpr) の本格導入
+
+すでに布石は打ってあるので、ここで:
+
+* `ConstVal` ベースの `evalConstExpr` を完成させて
+
+  * `VAR CONSTANT` の初期値評価
+  * CASE ラベル
+  * 静的添字
+  * 範囲指定 etc.
+
+に使う。
+
+今はピンポイントでやっている定数判定が一箇所に集約されて、仕様追加もしやすくなる。
+
+---
+
+### (G) FB / PROGRAM 呼び出し (Statement call) と FB インスタンス
+
+ここまで行けると、次の楽しいやつ:
+
+* `myFb();` 形式の呼び出しを `Statement` として扱う。
+* FB インスタンス（`myFb: MyFB;`）を「stateful struct + 実行ステップ」として扱う。
+
+これはちょっと重いので、上の (A)〜(F) が落ち着いてからで十分。
+
+---
+
+## 結論（いま何からやるのが良いか）
+
+今のあなたのコード状況だと、この順がバランス良いです：
+
+1. **(A)** FUNCTION / FUNCTION_BLOCK の AST & Parser
+2. **(B)** Unit elaboration で POU シグネチャを集約して `FuncEnv` に反映
+3. **(C)** ユーザー定義 FUNCTION 本体の型チェック
+4. **(D)** VAR_INPUT / OUTPUT / IN_OUT の意味論（少なくとも INPUT read-only）
+5. そのあとに **(E)** ANY_* を VAR_INPUT に解禁してジェネリック POU 完成
+
+この流れなら、いま構築した Env / ANY / Vary ベースの仕組みをほぼそのまま活かしつつ、段階的に強くしていけます。
