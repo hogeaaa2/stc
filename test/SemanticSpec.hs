@@ -23,38 +23,50 @@ import Vary (Vary, into, (:|))
 import Vary.VEither (VEither (VLeft, VRight))
 
 type AllErrs =
-  '[ AssignToConst,
-     AssignToLoopVar,
-     BadIndexCount,
-     WhyDidYouComeHere,
-     DuplicateVar,
-     IndexOutOfBounds,
-     InvalidCaseRange,
-     MissingInitializer,
-     NonConstantExpr,
-     NotAnArray,
-     NotAnEnum,
-     NotAStruct,
-     OutOfRange,
-     OverlappingCase,
-     TooManyAggElems,
-     TypeCycle,
-     TypeMismatch,
-     TypeMismatch',
-     UnknownEnumMember,
-     UnknownStructMember,
-     UnknownType,
-     UnknownVar,
-     UnknownFunction,
-     BadArgCount,
-     ArgTypeMismatch,
-     UnknownArgName,
-     DuplicateArgName,
-     PositionalAfterNamed
-   ]
+  [ AssignToConst,
+    AssignToLoopVar,
+    BadIndexCount,
+    WhyDidYouComeHere,
+    DuplicateVar,
+    IndexOutOfBounds,
+    InvalidCaseRange,
+    MissingInitializer,
+    NonConstantExpr,
+    NotAnArray,
+    NotAnEnum,
+    NotAStruct,
+    OutOfRange,
+    OverlappingCase,
+    TooManyAggElems,
+    TypeCycle,
+    TypeMismatch,
+    TypeMismatch',
+    UnknownEnumMember,
+    UnknownStructMember,
+    UnknownType,
+    UnknownVar,
+    UnknownFunction,
+    BadArgCount,
+    ArgTypeMismatch,
+    UnknownArgName,
+    DuplicateArgName,
+    PositionalAfterNamed
+  ]
 
-elaborateUnit :: Unit -> VEither AllErrs Unit
-elaborateUnit = elaborateUnitWithFuns M.empty
+elaborateUnitTest :: Unit -> VEither AllErrs Unit
+elaborateUnitTest = elaborateUnit M.empty
+
+elaborateProgramTest :: Program -> VEither AllErrs Program
+elaborateProgramTest = elaborateProgramTestWithTypes M.empty
+
+elaborateProgramTestWithTypes :: FuncEnv -> Program -> VEither AllErrs Program
+elaborateProgramTestWithTypes fenv prog =
+  case elaborateUnit fenv (Unit {uTypes = [], uPrograms = [prog]}) of
+    VRight (Unit _ [p']) -> VRight p'
+    VRight (Unit _ ps) ->
+      -- 基本ここには来ない想定だけど、一応保険
+      error $ "elaborateProgramTestWithFuns: expected exactly one program, got " <> show (length ps)
+    VLeft e -> VLeft e
 
 expectParsed :: Text -> (Program -> Expectation) -> Expectation
 expectParsed src k = case parseProgram src of
@@ -116,7 +128,7 @@ expectUnitPass src =
     Left e -> expectationFailure (show e)
     Right u ->
       let v :: VEither AllErrs Unit
-          v = elaborateUnit u
+          v = elaborateUnitTest u
        in shouldSucceedV v
 
 expectUnitFail ::
@@ -128,7 +140,7 @@ expectUnitFail src =
     Left e -> expectationFailure (show e)
     Right u ->
       let v :: VEither AllErrs Unit
-          v = elaborateUnit u
+          v = elaborateUnitTest u
        in shouldFail @err v
 
 expectUnitFailWithDetail ::
@@ -140,7 +152,7 @@ expectUnitFailWithDetail src pred' =
     Left e -> expectationFailure (show e)
     Right u ->
       let v :: VEither AllErrs Unit
-          v = elaborateUnit u
+          v = elaborateUnitTest u
        in shouldFailWithDetail @err v pred'
 
 -- FunEnv / elaborateUnitWithFuns を前提にした Unit 用ヘルパ
@@ -153,7 +165,7 @@ expectUnitPassWithFuns funs src =
     Left e -> expectationFailure (show e)
     Right u ->
       let v :: VEither AllErrs Unit
-          v = elaborateUnitWithFuns funs u
+          v = elaborateUnit funs u
        in shouldSucceedV v
 
 -- 失敗を期待（型だけ指定、詳細は見ない）
@@ -166,7 +178,7 @@ expectUnitFailWithFuns funs src =
     Left e -> expectationFailure (show e)
     Right u ->
       let v :: VEither AllErrs Unit
-          v = elaborateUnitWithFuns funs u
+          v = elaborateUnit funs u
        in shouldFail @err v
 
 -- 失敗を期待（この型で、かつ中身も predicate でチェック）
@@ -179,7 +191,7 @@ expectUnitFailWithDetailWithFuns funs src pred' =
     Left e -> expectationFailure (show e)
     Right u ->
       let v :: VEither AllErrs Unit
-          v = elaborateUnitWithFuns funs u
+          v = elaborateUnit funs u
        in shouldFailWithDetail @err v pred'
 
 main :: IO ()
@@ -191,7 +203,7 @@ main = hspec $ do
         Left e -> expectationFailure (show e)
         Right prog ->
           let v :: VEither AllErrs Program
-              v = elaborateProgram prog
+              v = elaborateProgramTest prog
            in v `shouldSatisfy` \case
                 VRight (Program _ (VarDecls [vx, vy]) _) ->
                   varInit vx == Just (EINT 0)
@@ -329,7 +341,7 @@ main = hspec $ do
         Left e -> expectationFailure (show e)
         Right u ->
           let vu :: VEither AllErrs Unit
-              vu = elaborateUnit u
+              vu = elaborateUnitTest u
            in vu `shouldSatisfy` \case
                 VRight (Unit _ [Program _ (VarDecls [v]) _]) ->
                   varType v == INT && varInit v == Just (EINT 0)
@@ -485,7 +497,7 @@ main = hspec $ do
             "TYPE Color : (Red, Green); END_TYPE\n\
             \PROGRAM P\nVAR c: Color; END_VAR\n"
       expectParsedUnit src $ \u ->
-        case elaborateUnit u :: VEither AllErrs Unit of
+        case elaborateUnitTest u :: VEither AllErrs Unit of
           VLeft e -> expectationFailure (show e)
           VRight (Unit _ [Program _ (VarDecls [v]) _]) ->
             case varInit v of
@@ -669,7 +681,7 @@ main = hspec $ do
       let src = "PROGRAM P\nVAR s: STRING; END_VAR\n"
       expectParsed src $ \prog ->
         let v :: VEither AllErrs Program
-            v = elaborateProgram prog
+            v = elaborateProgramTest prog
          in v `shouldSatisfy` \case
               VRight (Program _ (VarDecls [val]) _) -> varInit val == Just (ESTRING "")
               _ -> False
@@ -679,14 +691,14 @@ main = hspec $ do
           s2 = "PROGRAM P\nVAR t: STRING[32]; END_VAR\n"
       expectParsed s1 $ \p1 ->
         let v :: VEither AllErrs Program
-            v = elaborateProgram p1
+            v = elaborateProgramTest p1
          in v `shouldSatisfy` \case
               VRight (Program _ (VarDecls [val]) _) -> varInit val == Just (ESTRING "")
               _ -> False
 
       expectParsed s2 $ \p2 ->
         let v :: VEither AllErrs Program
-            v = elaborateProgram p2
+            v = elaborateProgramTest p2
          in v `shouldSatisfy` \case
               VRight (Program _ (VarDecls [val]) _) -> varInit val == Just (ESTRING "")
               _ -> False
@@ -885,7 +897,7 @@ main = hspec $ do
             \END_VAR\n"
       expectParsed src $ \prog ->
         let p :: VEither AllErrs Program
-            p = elaborateProgram prog
+            p = elaborateProgramTest prog
          in p `shouldSatisfy` \case
               VRight (Program _ (VarDecls vs) _) -> all (\v -> varInit v == Just (EINT 0)) vs
               _ -> False
@@ -1512,7 +1524,7 @@ main = hspec $ do
       case parseProgram s of
         Left e -> expectationFailure (show e)
         Right p ->
-          case elaborateProgram p :: VEither AllErrs Program of
+          case elaborateProgramTest p :: VEither AllErrs Program of
             VLeft es -> expectationFailure ("elaboration failed: " <> show es)
             VRight (Program _ (VarDecls vs) _) -> do
               let lookupInit nm = varInit =<< find (\v -> locVal (varName v) == nm) vs
