@@ -175,6 +175,7 @@ data DuplicateArgName = DuplicateArgName FunctionName ArgName Span deriving (Eq,
 data PositionalAfterNamed = PositionalAfterNamed Text Span deriving (Eq, Show) -- 名前付きの後に位置引数が現れた
 
 elaborateUnit ::
+  forall e.
   ( DuplicateVar :| e,
     TypeMismatch :| e,
     TypeMismatch' :| e,
@@ -207,41 +208,81 @@ elaborateUnit ::
   FuncEnv ->
   Unit ->
   VEither e Unit
-elaborateUnit fenv (Unit tys progs) = do
-  -- 型解決
+elaborateUnit fenv (Unit name items0) = do
+  -- 1. この Unit 内の TYPE 宣言を抽出
+  let tys = [td | UType tds <- items0, td <- tds]
+  -- 2. TYPE 同士の参照解決用の一時環境（生の宣言ベース）
   let tenv0 = typeEnvOf tys
-  tys' <- traverse (\(TypeDecl n t) -> TypeDecl n <$> resolveType tenv0 t) tys
+  -- 3. 各 TYPE の本体を解決して正規化
+  tys' <- traverse (elabTypeDecl tenv0) tys
+  -- 4. 正規化済み TYPE から最終 TypeEnv を構築
   let tenv = typeEnvOf tys'
-
-  -- 各 Program
-  progs' <- forM progs $ \(Program n vds body) -> do
-    -- まず型解決済み VarDecls
-    vds'@(VarDecls vs) <- resolveVarTypes tenv vds
-
-    -- VarEnv を構築（重複チェックもここで）
-    venv <- foldM (insertVar n) M.empty vs
-
-    let env = Env {envTypes = tenv, envVars = venv, envFuncs = fenv}
-
-    -- 初期化子チェック＆デフォルト付与
-    vs'' <- traverse (elabVar env) vs
-
-    -- ステートメント検査
-    mapM_ (checkStmt env) body
-
-    pure (Program n (VarDecls vs'') body)
-
-  pure (Unit tys' progs')
+  -- 5. 元の items の順序を保ったまま TLType を差し替える
+  let itemsWithElabTypes = replaceTypes items0 tys'
+  -- 6. Program だけ従来どおり elaborate（Function/FB は後回し）
+  items' <- traverse (elabUnitItem tenv fenv) itemsWithElabTypes
+  pure (Unit name items')
   where
+    -- TypeDecl の本体を resolve
+    elabTypeDecl :: TypeEnv -> TypeDecl -> VEither e TypeDecl
+    elabTypeDecl tenv0 (TypeDecl n t) =
+      TypeDecl n <$> resolveType tenv0 t
+
+    -- items 内の UType を、順番を維持したまま tys' で置き換える
+    replaceTypes :: [UnitItem] -> [TypeDecl] -> [UnitItem]
+    replaceTypes [] _ = []
+    replaceTypes (UType oldTds : xs) tds =
+      let (here, rest) = splitAt (length oldTds) tds
+       in UType here : replaceTypes xs rest
+    replaceTypes (x : xs) tds =
+      x : replaceTypes xs tds
+    -- tys' が余っても無視（基本ありえない前提）
+
+    -- TLProgram だけ従来の elaborate を適用
+    elabUnitItem :: TypeEnv -> FuncEnv -> UnitItem -> VEither e UnitItem
+    elabUnitItem tenv fenv' = \case
+      UProgram p -> UProgram <$> elaborateProgram tenv fenv p
+      -- A の段階では FUNCTION / FB は「まだ意味論を定義しない」のでそのまま返す
+      UFunction f -> pure (UFunction f)
+      UFunctionBlock fb -> pure (UFunctionBlock fb)
+      -- TYPE はすでに replaceTypes 済みなのでそのまま
+      t@(UType _) -> pure t
+
+    -- 旧 elaborateUnit 本体を Program 単位に切り出したもの
+    elaborateProgram :: TypeEnv -> FuncEnv -> Program -> VEither e Program
+    elaborateProgram tenv fenv' (Program n vds body) = do
+      -- 型解決済み VarDecls
+      vds'@(VarDecls vs) <- resolveVarTypes tenv vds
+
+      -- VarEnv 構築（重複チェック込み）
+      venv <- foldM (insertVar n) M.empty vs
+
+      let env =
+            Env
+              { envTypes = tenv,
+                envVars = venv,
+                envFuncs = fenv
+              }
+
+      -- 初期化子チェック＆デフォルト付与
+      vs'' <- traverse (elabVar env) vs
+
+      -- ステートメント検査
+      mapM_ (checkStmt env) body
+
+      pure (Program n (VarDecls vs'') body)
+
+    insertVar :: Text -> VarEnv -> Variable -> VEither e VarEnv
     insertVar progName m v = do
-      let name = locVal (varName v)
+      let vname = locVal (varName v)
           sp = locSpan (varName v)
-      case M.lookup name m of
-        Just _ -> VEither.fromLeft $ DuplicateVar name sp
+      case M.lookup vname m of
+        Just _ ->
+          VEither.fromLeft $ DuplicateVar vname sp
         Nothing ->
           pure $
             M.insert
-              name
+              vname
               VarInfo
                 { viType = varType v,
                   viSpan = sp,

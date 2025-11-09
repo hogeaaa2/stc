@@ -24,6 +24,9 @@ module ST.AST
     ConstVal (..),
     CallArg (..),
     GSTType (..),
+    UnitItem (..),
+    Function (..),
+    FunctionBlock (..),
   )
 where
 
@@ -64,7 +67,7 @@ data VarInfo = VarInfo
 
 data Program = Program
   { progName :: Text,
-    varDecls :: VarDecls,
+    progVarDecls :: VarDecls,
     progBody :: [Statement]
   }
   deriving (Eq, Show)
@@ -79,9 +82,36 @@ data TypeDecl = TypeDecl
   deriving (Eq, Show)
 
 -- ルート（翻訳単位/ファイル）
+
+type UnitFilePath = Text
+
 data Unit = Unit
-  { uTypes :: [TypeDecl],
-    uPrograms :: [Program]
+  { uPath :: UnitFilePath,
+    uItems :: [UnitItem]
+  }
+  deriving (Eq, Show)
+
+data UnitItem
+  = UType [TypeDecl]
+  | UProgram Program
+  | UFunction Function
+  | UFunctionBlock FunctionBlock
+  deriving (Eq, Show)
+
+-- Minimal representation for FUNCTION declaration (POU)
+data Function = Function
+  { funcName :: Text,
+    funcRetType :: STType,
+    funcVarDecls :: VarDecls,
+    fBody :: [Statement]
+  }
+  deriving (Eq, Show)
+
+-- Minimal representation for FUNCTION_BLOCK declaration (POU)
+data FunctionBlock = FunctionBlock
+  { fbName :: Text,
+    fbVarDecls :: VarDecls,
+    fbBody :: [Statement]
   }
   deriving (Eq, Show)
 

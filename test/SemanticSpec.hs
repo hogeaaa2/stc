@@ -61,8 +61,8 @@ elaborateProgramTest = elaborateProgramTestWithTypes M.empty
 
 elaborateProgramTestWithTypes :: FuncEnv -> Program -> VEither AllErrs Program
 elaborateProgramTestWithTypes fenv prog =
-  case elaborateUnit fenv (Unit {uTypes = [], uPrograms = [prog]}) of
-    VRight (Unit _ [p']) -> VRight p'
+  case elaborateUnit fenv (Unit "" [UProgram prog]) of
+    VRight (Unit _ [UProgram p']) -> VRight p'
     VRight (Unit _ ps) ->
       -- 基本ここには来ない想定だけど、一応保険
       error $ "elaborateProgramTestWithFuns: expected exactly one program, got " <> show (length ps)
@@ -343,8 +343,10 @@ main = hspec $ do
           let vu :: VEither AllErrs Unit
               vu = elaborateUnitTest u
            in vu `shouldSatisfy` \case
-                VRight (Unit _ [Program _ (VarDecls [v]) _]) ->
-                  varType v == INT && varInit v == Just (EINT 0)
+                VRight (Unit _ items) ->
+                  case [v | UProgram (Program _ (VarDecls [v]) _) <- items] of
+                    [v] -> varType v == INT && varInit v == Just (EINT 0)
+                    _ -> False
                 _ -> False
 
     it "fails on unknown type" $ do
@@ -498,14 +500,18 @@ main = hspec $ do
             \PROGRAM P\nVAR c: Color; END_VAR\n"
       expectParsedUnit src $ \u ->
         case elaborateUnitTest u :: VEither AllErrs Unit of
-          VLeft e -> expectationFailure (show e)
-          VRight (Unit _ [Program _ (VarDecls [v]) _]) ->
-            case varInit v of
-              Just (EField (EVar ty) ctor) -> do
-                locVal ty `shouldBe` "Color"
-                locVal ctor `shouldBe` "Red"
-              other -> expectationFailure ("unexpected init: " <> show other)
-          VRight other -> expectationFailure ("unexpected shape: " <> show other)
+          VRight (Unit _ items) ->
+            -- TopLevel から Program を一個だけ拾う
+            case [v | UProgram (Program _ (VarDecls [v]) _) <- items] of
+              [v] ->
+                case varInit v of
+                  Just (EField (EVar ty) ctor) -> do
+                    locVal ty `shouldBe` "Color"
+                    locVal ctor `shouldBe` "Red"
+                  other ->
+                    expectationFailure ("unexpected init: " <> show other)
+              _ -> expectationFailure "expected exactly one PROGRAM with one variable"
+          _ -> expectationFailure "unexpected shape of Unit"
 
   describe "nominal identity (ENUM)" $ do
     it "rejects assigning different enum types" $ do

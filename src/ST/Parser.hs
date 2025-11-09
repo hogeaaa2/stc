@@ -11,7 +11,7 @@ module ST.Parser
     pUnit,
     pStmt,
     pExpr,
-    pTypeBlock,
+    pTypeDecl,
     pVariable,
     pInt,
     pReal,
@@ -97,90 +97,72 @@ parseProgram = parse (pProgram <* eof) "<input>"
 parseUnit :: Text -> Either (ParseErrorBundle Text Void) Unit
 parseUnit = parse (sc *> pUnit <* eof) "<input>"
 
-identifier :: Parser Identifier
-identifier = withSpan $ lexeme $ do
-  first <- choice [l, usld]
-  rest <- many $ choice [ld, usld]
-  let result = T.append first (T.concat rest)
-   in if not $ Set.member (T.toUpper result) reserved
-        then pure result
-        else do
-          off <- getOffset
-          let item = Label (NE.fromList (T.unpack result))
-          registerParseError
-            ( TrivialError
-                off
-                (Just item)
-                (Set.singleton $ Label $ NE.fromList "non-reserved string")
-            )
-          pure ""
-  where
-    l :: Parser Text
-    l = T.singleton <$> satisfy isLetter
-
-    ld :: Parser Text
-    ld = T.singleton <$> satisfy isLetterDigit
-
-    usld :: Parser Text
-    usld = do
-      us <- char '_'
-      c <- satisfy isLetterDigit
-      pure $ T.cons us (T.singleton c)
-
 pUnit :: Parser Unit
-pUnit =
-  -- Case 1: TYPE* then PROGRAM (existing behavior)
-  ( do
-      tys <- many pTypeBlock
-      prg <- pProgram
-      pure (Unit (concat tys) [prg])
-  )
-    <|>
-  -- Case 2: One or more FUNCTION/FB declarations only (accept, ignore bodies)
-  ( do
-      _ <- some (try pFunctionDeclDummy <|> try pFunctionBlockDeclDummy)
-      pure (Unit [] [])
-  )
+pUnit = do
+  items <- many pUnitItem
+  pure $ Unit {uPath = "", uItems = items}
 
--- Minimal FUNCTION parser (dummy): parses header/VAR sections and optional END_FUNCTION.
--- The body is skipped until END_FUNCTION, next top-level token, or EOF.
-pFunctionDeclDummy :: Parser ()
-pFunctionDeclDummy = lexeme $ do
+pUnitItem :: Parser UnitItem
+pUnitItem =
+  choice
+    [ UType <$> try pTypeDecl,
+      UProgram <$> try pProgram,
+      UFunctionBlock <$> try pFunctionBlock,
+      UFunction <$> pFunction
+    ]
+
+pTypeDecl :: Parser [TypeDecl]
+pTypeDecl = lexeme $ do
+  _ <- symbol "TYPE"
+  someTill pOneType (symbol "END_TYPE")
+  where
+    pOneType = do
+      nm <- identifier
+      _ <- symbol ":"
+      ty <- pSTType
+      _ <- symbol ";"
+      pure (TypeDecl nm ty)
+
+pProgram :: Parser Program
+pProgram = do
+  _ <- symbol "PROGRAM"
+  pn <- identifier
+  vds <- some pVarDecls
+  let vars = concat [vs | VarDecls vs <- vds]
+  body <- many pStmt
+  pure (Program (locVal pn) (VarDecls vars) body)
+
+pVarDecls :: Parser VarDecls
+pVarDecls = lexeme $ do
+  _ <-
+    choice
+      [ try $ symbol "VAR_INPUT",
+        symbol "VAR"
+      ]
+  isConst <- isJust <$> optional (symbol "CONSTANT")
+  vs <- manyTill (pVariable isConst) (symbol "END_VAR")
+  pure (VarDecls vs)
+
+pFunction :: Parser Function
+pFunction = do
   _ <- symbol "FUNCTION"
-  _fname <- identifier
+  fname <- identifier
   _ <- symbol ":"
-  _retTy <- pSTType
-  -- zero or more VAR sections we currently support (at least VAR_INPUT)
-  _ <- many (try (pVarSection "VAR_INPUT") <|> try (pVarSection "VAR") <|> try (pVarSection "VAR_TEMP"))
-  -- Skip body until END_FUNCTION, next top-level, or EOF
-  _ <- manyTill anySingle (void (lookAhead (symbol "END_FUNCTION")) <|> lookAheadTop <|> eof)
-  -- Consume optional END_FUNCTION if present
-  _ <- optional (symbol "END_FUNCTION")
-  pure ()
+  ftype <- pSTType
+  vds <- some pVarDecls
+  let vars = concat [vs | VarDecls vs <- vds]
+  body <- many pStmt
+  pure (Function (locVal fname) ftype (VarDecls vars) body)
 
--- Minimal FUNCTION_BLOCK parser (dummy)
-pFunctionBlockDeclDummy :: Parser ()
-pFunctionBlockDeclDummy = lexeme $ do
+pFunctionBlock :: Parser FunctionBlock
+pFunctionBlock = lexeme $ do
   _ <- symbol "FUNCTION_BLOCK"
-  _fbname <- identifier
-  _ <- many (try (pVarSection "VAR_INPUT") <|> try (pVarSection "VAR") <|> try (pVarSection "VAR_TEMP"))
-  -- Skip body until END_FUNCTION_BLOCK, next top-level, or EOF
-  _ <- manyTill anySingle (void (lookAhead (symbol "END_FUNCTION_BLOCK")) <|> lookAheadTop <|> eof)
+  fbname <- identifier
+  vds <- some pVarDecls
+  let vars = concat [vs | VarDecls vs <- vds]
+  body <- many pStmt
   _ <- optional (symbol "END_FUNCTION_BLOCK")
-  pure ()
-
--- Recognize sync points for top-level constructs
-lookAheadTop :: Parser ()
-lookAheadTop =
-  void . lookAhead $
-    choice [symbol "PROGRAM", symbol "TYPE", symbol "FUNCTION", symbol "FUNCTION_BLOCK"]
-
--- Generic VAR section used inside FUNCTION/FB (e.g., VAR_INPUT, VAR)
-pVarSection :: Text -> Parser [Variable]
-pVarSection kwd = lexeme $ do
-  _ <- symbol kwd
-  vs <- manyTill (pVariable False) (symbol "END_VAR")
-  pure vs
+  pure (FunctionBlock (locVal fbname) (VarDecls vars) body)
 
 pStmt :: Parser Statement
 pStmt = withRecovery recover pStmtCore
@@ -280,18 +262,6 @@ pExpr = makeExprParser pTerm table
 --   x <- identifier
 --   fs <- many (symbol "." *> identifier)
 --   pure (foldl LField (LVar x) fs)
-
-pTypeBlock :: Parser [TypeDecl]
-pTypeBlock = do
-  _ <- symbol "TYPE"
-  someTill pOneType (symbol "END_TYPE")
-  where
-    pOneType = do
-      nm <- identifier
-      _ <- symbol ":"
-      ty <- pSTType
-      _ <- symbol ";"
-      pure (TypeDecl nm ty)
 
 -- Var_Decl_Init
 pVariable :: Bool -> Parser Variable
@@ -540,10 +510,6 @@ readBaseInt b s0 =
 delimOf :: DollarPolicy -> Char
 delimOf pol = if allowDollarSingle pol then '\'' else '"'
 
-------------------
--- lexer
-------------------
-
 sc :: Parser ()
 sc =
   L.space
@@ -579,9 +545,35 @@ parens = between (symbol "(") (symbol ")")
 brackets :: Parser a -> Parser a
 brackets = between (symbol "[") (symbol "]")
 
-------------------
--- parser
-------------------
+identifier :: Parser Identifier
+identifier = withSpan $ lexeme $ do
+  first <- choice [l, usld]
+  rest <- many $ choice [ld, usld]
+  let result = T.append first (T.concat rest)
+   in if not $ Set.member (T.toUpper result) reserved
+        then pure result
+        else do
+          off <- getOffset
+          let item = Label (NE.fromList (T.unpack result))
+          registerParseError
+            ( TrivialError
+                off
+                (Just item)
+                (Set.singleton $ Label $ NE.fromList "non-reserved string")
+            )
+          pure ""
+  where
+    l :: Parser Text
+    l = T.singleton <$> satisfy isLetter
+
+    ld :: Parser Text
+    ld = T.singleton <$> satisfy isLetterDigit
+
+    usld :: Parser Text
+    usld = do
+      us <- char '_'
+      c <- satisfy isLetterDigit
+      pure $ T.cons us (T.singleton c)
 
 pBool :: Parser Bool
 pBool = (True <$ symbol "TRUE") <|> (False <$ symbol "FALSE")
@@ -826,22 +818,6 @@ pStructType = do
       t <- pSTType
       _ <- symbol ";"
       pure (f, t)
-
-pProgram :: Parser Program
-pProgram = do
-  _ <- symbol "PROGRAM"
-  pn <- identifier
-  vds <- some pVarDecls
-  let vars = concat [vs | VarDecls vs <- vds]
-  body <- many pStmt
-  pure (Program (locVal pn) (VarDecls vars) body)
-
-pVarDecls :: Parser VarDecls
-pVarDecls = lexeme $ do
-  _ <- symbol "VAR"
-  isConst <- isJust <$> optional (symbol "CONSTANT")
-  vs <- manyTill (pVariable isConst) (symbol "END_VAR")
-  pure (VarDecls vs)
 
 pSkip :: Parser Statement
 pSkip = semicolon $> Skip

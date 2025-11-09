@@ -351,7 +351,7 @@ main = hspec $ do
             "TYPE R : STRUCT a: INT; b: BOOL; END_STRUCT; Alias : R; END_TYPE",
             "TYPE R : STRUCT p: STRUCT x: INT; END_STRUCT; END_STRUCT; END_TYPE"
           ]
-        run = parse (pTypeBlock <* eof) "<test>"
+        run = parse (pTypeDecl <* eof) "<test>"
     forM_ ok $ \tc ->
       it ("parses TYPE block: " <> T.unpack tc) $
         shouldParse run tc
@@ -389,7 +389,7 @@ main = hspec $ do
       shouldParseExprToNoLoc runE "r.a" (EField (EVar (toIdent "r")) (toIdent "a"))
 
   describe "ARRAY type parsing" $ do
-    let run = parse (pTypeBlock <* eof) "<test>"
+    let run = parse (pTypeDecl <* eof) "<test>"
     it "parses 1D array type" $
       shouldParse run "TYPE A : ARRAY [1..10] OF INT; END_TYPE"
     it "parses 2D array of BOOL" $
@@ -436,7 +436,7 @@ main = hspec $ do
           [ "TYPE Color : (Red, Green, Blue); END_TYPE",
             "TYPE Flag  : (Off, On); END_TYPE"
           ]
-        run = parse (pTypeBlock <* eof) "<test>"
+        run = parse (pTypeDecl <* eof) "<test>"
     forM_ ok $ \tc ->
       it ("parses enum TYPE: " <> T.unpack tc) $
         shouldParse run tc
@@ -483,7 +483,7 @@ main = hspec $ do
       shouldParse run "CASE x OF 0: ; END_CASE"
 
   describe "ENUM explicit values (parsing)" $ do
-    let run = parse (pTypeBlock <* eof) "<test>"
+    let run = parse (pTypeDecl <* eof) "<test>"
 
     it "parses TYPE Color : (Red := 0, Green := 2); END_TYPE" $ do
       shouldParse run "TYPE Color : (Red := 0, Green := 2); END_TYPE"
@@ -492,7 +492,7 @@ main = hspec $ do
       shouldParse run "TYPE Sgn : (Pos := 1, Neg := -1); END_TYPE"
 
   describe "ENUM explicit values with expressions (parsing)" $ do
-    let run = parse (pTypeBlock <* eof) "<test>"
+    let run = parse (pTypeDecl <* eof) "<test>"
     it "parses TYPE Color : (Red := 1 + 2*3, Green := (1+2)*(3-1)); END_TYPE" $
       shouldParse run "TYPE Color : (Red := 1 + 2*3, Green := (1+2)*(3-1)); END_TYPE"
     it "parses TYPE Sgn : (Pos := +1, Neg := -1); END_TYPE" $
@@ -781,12 +781,10 @@ main = hspec $ do
             \  r: R := (x := 1, y := 2.0);\n\
             \END_VAR\n"
       expectRight (parseUnit src) $
-        \(Unit _ ps) -> case ps of
-          [Program _ vds _] ->
-            varSigs vds `shouldSatisfy` \case
-              [("r", Named i, mi, False)] -> isJust mi && locVal i == "R"
-              _ -> False
-          _ -> expectationFailure "unexpected pattern"
+        \(Unit _ [UType _, UProgram (Program _ vds _)]) ->
+          varSigs vds `shouldSatisfy` \case
+            [("r", Named i, mi, False)] -> isJust mi && locVal i == "R"
+            _ -> False
 
     it "parses struct aggregate in any field order" $ do
       let src =
@@ -797,12 +795,10 @@ main = hspec $ do
             \END_VAR\n"
 
       expectRight (parseUnit src) $
-        \(Unit _ ps) -> case ps of
-          [Program _ vds _] ->
-            varSigs vds `shouldSatisfy` \case
-              [("r", Named i, mi, False)] -> isJust mi && locVal i == "R"
-              _ -> False
-          _ -> expectationFailure "unexpected pattern"
+        \(Unit _ [UType _, UProgram (Program _ vds _)]) ->
+          varSigs vds `shouldSatisfy` \case
+            [("r", Named i, mi, False)] -> isJust mi && locVal i == "R"
+            _ -> False
 
     it "parses nested aggregate: array of structs" $ do
       let src =
@@ -812,12 +808,10 @@ main = hspec $ do
             \  a: ARRAY[0..1] OF R := [(x := 1, y := 2), (x := 3, y := 4)];\n\
             \END_VAR\n"
       expectRight (parseUnit src) $
-        \(Unit _ ps) -> case ps of
-          [Program _ vds _] ->
-            varSigs vds `shouldSatisfy` \case
-              [("a", Array [ArrRange 0 1] (Named i), mi, False)] -> isJust mi && locVal i == "R"
-              _ -> False
-          _ -> expectationFailure "unexpected pattern"
+        \(Unit _ [UType _, UProgram (Program _ vds _)]) ->
+          varSigs vds `shouldSatisfy` \case
+            [("a", Array [ArrRange 0 1] (Named i), mi, False)] -> isJust mi && locVal i == "R"
+            _ -> False
 
   describe "IEC 61131-3 Date/Time literals (parsing, spec examples)" $ do
     let mk :: Text -> Text -> Text
