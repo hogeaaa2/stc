@@ -54,13 +54,14 @@ data VarKind
   | VKInOut -- VAR_INOUT
   | VKTemp -- VAR_TEMP
   | VKGlobal -- VAR_GLOBAL
-  | VKConstant -- VAR CONSTANT
   deriving (Eq, Show)
 
 data VarInfo = VarInfo
   { viType :: STType,
     viSpan :: Span,
     viKind :: VarKind,
+    viConst :: Bool,
+    viRetain :: Bool,
     viInit :: Maybe Expr
   }
   deriving (Show, Eq)
@@ -234,7 +235,9 @@ data Variable = Variable
   { varName :: Identifier,
     varType :: STType,
     varInit :: Maybe Expr,
-    varConst :: Bool
+    varKind :: VarKind, -- VAR/INPUT/OUTPUT/...
+    varConst :: Bool, -- CONSTANT
+    varRetain :: Bool
   }
   deriving (Eq, Show)
 

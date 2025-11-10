@@ -134,13 +134,13 @@ pProgram = do
 
 pVarDecls :: Parser VarDecls
 pVarDecls = lexeme $ do
-  _ <-
+  kind <-
     choice
-      [ try $ symbol "VAR_INPUT",
-        symbol "VAR"
+      [ VKInput <$ try (symbol "VAR_INPUT"),
+        VKLocal <$ symbol "VAR"
       ]
   isConst <- isJust <$> optional (symbol "CONSTANT")
-  vs <- manyTill (pVariable isConst) (symbol "END_VAR")
+  vs <- manyTill (pVariable kind isConst) (symbol "END_VAR")
   pure (VarDecls vs)
 
 pFunction :: Parser Function
@@ -264,14 +264,22 @@ pExpr = makeExprParser pTerm table
 --   pure (foldl LField (LVar x) fs)
 
 -- Var_Decl_Init
-pVariable :: Bool -> Parser Variable
-pVariable isConst = lexeme $ do
+pVariable :: VarKind -> Bool -> Parser Variable
+pVariable kind isConst = lexeme $ do
   name <- identifier
   _ <- colon
   dt <- pSTType
   vInit <- optional (assignOp *> lexeme pExpr)
   _ <- semicolon
-  pure (Variable name dt vInit isConst)
+  pure
+    Variable
+      { varName = name,
+        varType = dt,
+        varInit = vInit,
+        varConst = isConst,
+        varKind = kind,
+        varRetain = False
+      }
 
 pInt :: Parser Int
 pInt = lexeme $ do

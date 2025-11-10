@@ -47,7 +47,7 @@ where
 import Control.Monad (foldM, forM, forM_, guard, unless, when)
 import Data.List (sortOn)
 import Data.Map.Strict qualified as M
-import Data.Maybe (catMaybes, fromMaybe)
+import Data.Maybe (catMaybes, fromJust, fromMaybe)
 import Data.Set qualified as Set
 import Data.Text (Text)
 import Data.Text qualified as T
@@ -74,10 +74,30 @@ data Env = Env
     envFuncs :: FuncEnv
   }
 
+-- | 引数の方向
+data ParamDirKind
+  = ParamIn
+  | ParamOut
+  | ParamInOut
+  deriving (Eq, Show)
+
+data ParamSig = ParamSig
+  { psName :: Text, -- パラメータ名
+    psType :: STType, -- 解決済みの型
+    psDir :: ParamDirKind
+  }
+  deriving (Eq, Show)
+
+data FuncKind
+  = FKFunction
+  | FKFunctionBlock
+  deriving (Eq, Show)
+
 data FuncSig = FuncSig
   { fsName :: Text,
+    fsKind :: FuncKind,
     fsArgs :: [(Text, SigTy)], -- 位置/名前付きの両対応。例: [("x", INT), ("y", INT)]
-    fsRet :: SigTy
+    fsRet :: Maybe SigTy
   }
   deriving (Eq, Show)
 
@@ -173,6 +193,8 @@ data UnknownArgName = UnknownArgName FunctionName ArgName Span deriving (Eq, Sho
 data DuplicateArgName = DuplicateArgName FunctionName ArgName Span deriving (Eq, Show) -- 重複引数名
 
 data PositionalAfterNamed = PositionalAfterNamed Text Span deriving (Eq, Show) -- 名前付きの後に位置引数が現れた
+
+newtype DuplicateFunction = DuplicateFunction Text deriving (Eq, Show)
 
 elaborateUnit ::
   forall e.
@@ -286,10 +308,113 @@ elaborateUnit fenv (Unit name items0) = do
               VarInfo
                 { viType = varType v,
                   viSpan = sp,
-                  viKind = if varConst v then VKConstant else VKLocal,
-                  viInit = varInit v
+                  viKind = varKind v,
+                  viInit = varInit v,
+                  viConst = varConst v,
+                  viRetain = varRetain v
                 }
               m
+
+buildFuncEnvFromUnit ::
+  forall e.
+  ( TypeCycle :| e,
+    UnknownType :| e,
+    DuplicateFunction :| e
+  ) =>
+  TypeEnv -> Unit -> VEither e FuncEnv
+buildFuncEnvFromUnit tenv (Unit _ items) =
+  foldM (addItem tenv) M.empty items
+
+addItem ::
+  forall e.
+  ( TypeCycle :| e,
+    UnknownType :| e,
+    DuplicateFunction :| e
+  ) =>
+  TypeEnv -> FuncEnv -> UnitItem -> VEither e FuncEnv
+addItem tenv env = \case
+  UFunction f -> addFunction tenv env f
+  UFunctionBlock fb -> addFunctionBlock tenv env fb
+  _ -> pure env
+
+insertFuncSig ::
+  (DuplicateFunction :| e) =>
+  FuncSig -> FuncEnv -> VEither e FuncEnv
+insertFuncSig sig env =
+  let name = fsName sig
+   in case M.lookup name env of
+        Just _ -> VEither.fromLeft (DuplicateFunction name)
+        Nothing -> pure (M.insert name sig env)
+
+paramSigToArg :: ParamSig -> (Text, SigTy)
+paramSigToArg (ParamSig name ty _dir) = (name, SigMono ty)
+
+addFunction ::
+  forall e.
+  ( TypeCycle :| e,
+    UnknownType :| e,
+    DuplicateFunction :| e
+  ) =>
+  TypeEnv -> FuncEnv -> Function -> VEither e FuncEnv
+addFunction tenv env f = do
+  let name = funcName f
+
+  -- 戻り値型を解決
+  retTy' <- resolveType tenv (funcRetType f)
+
+  -- パラメータ一覧を構築
+  params <- collectPOUParams tenv (funcVarDecls f)
+  let sig =
+        FuncSig
+          { fsName = name,
+            fsKind = FKFunction,
+            fsArgs = map paramSigToArg params,
+            fsRet = Just $ SigMono retTy'
+          }
+  insertFuncSig sig env
+
+addFunctionBlock ::
+  forall e.
+  ( TypeCycle :| e,
+    UnknownType :| e,
+    DuplicateFunction :| e
+  ) =>
+  TypeEnv -> FuncEnv -> FunctionBlock -> VEither e FuncEnv
+addFunctionBlock tenv env (FunctionBlock {fbName, fbVarDecls}) = do
+  params <- collectPOUParams tenv fbVarDecls
+  let args = map paramSigToArg params
+  insertFuncSig
+    FuncSig
+      { fsName = fbName,
+        fsKind = FKFunctionBlock,
+        fsArgs = args,
+        fsRet = Nothing
+      }
+    env
+
+collectPOUParams ::
+  forall e.
+  ( TypeCycle :| e,
+    UnknownType :| e
+  ) =>
+  TypeEnv -> VarDecls -> VEither e [ParamSig]
+collectPOUParams tenv (VarDecls vs) =
+  fmap catMaybes . forM vs $ \v ->
+    case varKind v of
+      VKInput -> Just <$> mk ParamIn v
+      VKOutput -> Just <$> mk ParamOut v
+      VKInOut -> Just <$> mk ParamInOut v
+      _ -> pure Nothing
+  where
+    mk :: ParamDirKind -> Variable -> VEither e ParamSig
+    mk dir v = do
+      ty' <- resolveType tenv (varType v)
+      pure
+        ParamSig
+          { psName = locVal (varName v),
+            psType = ty',
+            psDir = dir
+          }
 
 toIdent :: Text -> Identifier
 toIdent txt =
@@ -679,7 +804,7 @@ inferType env = \case
         fspan = locSpan fn
         tenv = envTypes env
 
-    FuncSig _ fsArgs fsRet <-
+    FuncSig _ _ fsArgs fsRet <-
       case M.lookup fname (envFuncs env) of
         Nothing -> VEither.fromLeft $ UnknownFunction fname fspan
         Just sig' -> pure sig'
@@ -732,7 +857,7 @@ inferType env = \case
         (zip3 [1 ..] fsArgs orderedArgs)
 
     -- 束縛済み型変数に従って戻り値 SigTy を具体型に落とす
-    instantiateSigTy tenv subst fsRet
+    instantiateSigTy tenv subst (fromJust fsRet)
   where
     eqLike ta tb =
       if nominalEq (envTypes env) ta tb
@@ -936,7 +1061,7 @@ lvalueType env ty = \case
       Nothing ->
         VEither.fromLeft $ UnknownVar (locVal i) (locSpan i)
       Just info ->
-        if viKind info == VKConstant
+        if viConst info
           then VEither.fromLeft $ AssignToConst (locVal i) (locSpan i)
           else VRight $ viType info
   LField l fld -> do
@@ -1403,8 +1528,8 @@ checkStmt env = \case
     case M.lookup nameTxt (envVars env) of
       Nothing -> VEither.fromLeft $ UnknownVar nameTxt whereSp
       Just info ->
-        case viKind info of
-          VKConstant -> VEither.fromLeft $ AssignToConst nameTxt whereSp
+        case viConst info of
+          True -> VEither.fromLeft $ AssignToConst nameTxt whereSp
           _ -> when (viType info /= INT) $ VEither.fromLeft $ TypeMismatch nameTxt whereSp INT $ viType info
 
     -- init / end / step は INT
@@ -1497,7 +1622,7 @@ checkConstDesignator env = go
     -- ヘルパ
     isConstVar m i =
       case M.lookup (locVal i) m of
-        Just vi -> viKind vi == VKConstant
+        Just vi -> viConst vi
         _ -> False
 
     isEnumType te tyId =
@@ -1611,7 +1736,7 @@ evalConstExpr env = go
       -- VAR CONSTANT の伝播
       EVar i -> do
         vi <- M.lookup (locVal i) (envVars env)
-        guard (viKind vi == VKConstant)
+        guard (viConst vi)
         initE <- viInit vi
         go initE
       _ -> Nothing
