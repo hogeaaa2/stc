@@ -22,37 +22,6 @@ import Text.Megaparsec.Pos (initialPos)
 import Vary (Vary, into, (:|))
 import Vary.VEither (VEither (VLeft, VRight))
 
-type AllErrs =
-  [ AssignToConst,
-    AssignToLoopVar,
-    BadIndexCount,
-    WhyDidYouComeHere,
-    DuplicateVar,
-    IndexOutOfBounds,
-    InvalidCaseRange,
-    MissingInitializer,
-    NonConstantExpr,
-    NotAnArray,
-    NotAnEnum,
-    NotAStruct,
-    OutOfRange,
-    OverlappingCase,
-    TooManyAggElems,
-    TypeCycle,
-    TypeMismatch,
-    TypeMismatch',
-    UnknownEnumMember,
-    UnknownStructMember,
-    UnknownType,
-    UnknownVar,
-    UnknownFunction,
-    BadArgCount,
-    ArgTypeMismatch,
-    UnknownArgName,
-    DuplicateArgName,
-    PositionalAfterNamed
-  ]
-
 elaborateUnitTest :: Unit -> VEither AllErrs Unit
 elaborateUnitTest = elaborateUnit M.empty
 
@@ -1569,15 +1538,15 @@ main = hspec $ do
         funsSimple :: FuncEnv
         funsSimple =
           M.fromList
-            [ ("ADD", FuncSig {fsName = "ADD", fsArgs = [("x", SigMono INT), ("y", SigMono INT)], fsRet = SigMono INT}),
-              ("SUB", FuncSig {fsName = "SUB", fsArgs = [("x", SigMono INT), ("y", SigMono INT)], fsRet = SigMono INT}),
-              ("NOP", FuncSig {fsName = "NOP", fsArgs = [], fsRet = SigMono INT})
+            [ ("ADD", FuncSig {fsName = "ADD", fsArgs = [("x", SigMono INT), ("y", SigMono INT)], fsRet = Just (SigMono INT), fsKind = FKFunction}),
+              ("SUB", FuncSig {fsName = "SUB", fsArgs = [("x", SigMono INT), ("y", SigMono INT)], fsRet = Just (SigMono INT), fsKind = FKFunction}),
+              ("NOP", FuncSig {fsName = "NOP", fsArgs = [], fsRet = Just (SigMono INT), fsKind = FKFunction})
             ]
 
         funsReal :: FuncEnv
         funsReal =
           M.fromList
-            [ ("MIX", FuncSig {fsName = "MIX", fsArgs = [("a", SigMono INT), ("b", SigMono REAL)], fsRet = SigMono REAL})
+            [ ("MIX", FuncSig {fsName = "MIX", fsArgs = [("a", SigMono INT), ("b", SigMono REAL)], fsRet = Just (SigMono REAL), fsKind = FKFunction})
             ]
         -- 成功ケース
         ok =
@@ -1656,7 +1625,8 @@ main = hspec $ do
                 FuncSig
                   { fsName = "ID_ANY_INT",
                     fsArgs = [("IN", SigGen GSTAnyInt (TV 0))],
-                    fsRet = SigGen GSTAnyInt (TV 0)
+                    fsRet = Just $ SigGen GSTAnyInt (TV 0),
+                    fsKind = FKFunction
                   }
               ),
               -- ADD_NUM: X,Y : ANY_NUM (同じ型) -> SAME_TYPE
@@ -1667,7 +1637,8 @@ main = hspec $ do
                       [ ("X", SigGen GSTAnyNum (TV 0)),
                         ("Y", SigGen GSTAnyNum (TV 0))
                       ],
-                    fsRet = SigGen GSTAnyNum (TV 0)
+                    fsRet = Just $ SigGen GSTAnyNum (TV 0),
+                    fsKind = FKFunction
                   }
               ),
               -- SEL_ANY: G:BOOL, IN0/IN1: ANY (同じ型) -> SAME_TYPE
@@ -1679,7 +1650,8 @@ main = hspec $ do
                         ("IN0", SigGen GSTAny (TV 0)),
                         ("IN1", SigGen GSTAny (TV 0))
                       ],
-                    fsRet = SigGen GSTAny (TV 0)
+                    fsRet = Just $ SigGen GSTAny (TV 0),
+                    fsKind = FKFunction
                   }
               ),
               -- PAIR2: A,B : ANY_INT (別々の型変数) -> BOOL
@@ -1691,7 +1663,8 @@ main = hspec $ do
                       [ ("A", SigGen GSTAnyInt (TV 0)),
                         ("B", SigGen GSTAnyInt (TV 1))
                       ],
-                    fsRet = SigMono BOOL
+                    fsRet = Just $ SigMono BOOL,
+                    fsKind = FKFunction
                   }
               )
             ]

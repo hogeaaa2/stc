@@ -262,10 +262,10 @@ main = hspec $ do
 
   describe "Variable declaration" $ do
     let ok =
-          [ ("_LIM_SW5:INT;", Variable (toIdent "_LIM_SW5") INT Nothing False),
-            ("ab:BOOL;", Variable (toIdent "ab") BOOL Nothing False)
+          [ ("_LIM_SW5:INT;", Variable (toIdent "_LIM_SW5") INT Nothing VKLocal False False),
+            ("ab:BOOL;", Variable (toIdent "ab") BOOL Nothing VKLocal False False)
           ]
-        run = parse (pVariable False <* eof) "<test>"
+        run = parse (pVariable VKLocal False <* eof) "<test>"
     forM_ ok $ \(tc, want) ->
       it ("parses " <> T.unpack tc) $
         shouldParseTo run tc want

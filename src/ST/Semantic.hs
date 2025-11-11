@@ -12,6 +12,8 @@ module ST.Semantic
     FuncSig (..),
     SigTy (..),
     TVarId (..),
+    FuncKind (..),
+    AllErrs,
     DuplicateVar (..),
     UnknownVar (..),
     AssignToConst (..),
@@ -196,40 +198,51 @@ data PositionalAfterNamed = PositionalAfterNamed Text Span deriving (Eq, Show) -
 
 newtype DuplicateFunction = DuplicateFunction Text deriving (Eq, Show)
 
+newtype InternalError = InternalError Text deriving (Eq, Show)
+
+newtype MissingReturn = MissingReturn FunctionName deriving (Eq, Show)
+
+newtype UnsupportedGenericReturn = UnsupportedGenericReturn FunctionName deriving (Eq, Show)
+
+type AllErrs =
+  [ AssignToConst,
+    AssignToLoopVar,
+    BadIndexCount,
+    WhyDidYouComeHere,
+    DuplicateVar,
+    IndexOutOfBounds,
+    InvalidCaseRange,
+    MissingInitializer,
+    NonConstantExpr,
+    NotAnArray,
+    NotAnEnum,
+    NotAStruct,
+    OutOfRange,
+    OverlappingCase,
+    TooManyAggElems,
+    TypeCycle,
+    TypeMismatch,
+    TypeMismatch',
+    UnknownEnumMember,
+    UnknownStructMember,
+    UnknownType,
+    UnknownVar,
+    UnknownFunction,
+    BadArgCount,
+    ArgTypeMismatch,
+    UnknownArgName,
+    DuplicateArgName,
+    PositionalAfterNamed,
+    DuplicateFunction,
+    InternalError,
+    MissingReturn,
+    UnsupportedGenericReturn
+  ]
+
 elaborateUnit ::
-  forall e.
-  ( DuplicateVar :| e,
-    TypeMismatch :| e,
-    TypeMismatch' :| e,
-    MissingInitializer :| e,
-    AssignToLoopVar :| e,
-    InvalidCaseRange :| e,
-    OverlappingCase :| e,
-    OutOfRange :| e,
-    UnknownStructMember :| e,
-    NotAStruct :| e,
-    TooManyAggElems :| e,
-    WhyDidYouComeHere :| e,
-    TypeCycle :| e,
-    UnknownType :| e,
-    UnknownEnumMember :| e,
-    NotAnEnum :| e,
-    IndexOutOfBounds :| e,
-    NotAnArray :| e,
-    UnknownVar :| e,
-    AssignToConst :| e,
-    BadIndexCount :| e,
-    NonConstantExpr :| e,
-    UnknownFunction :| e,
-    ArgTypeMismatch :| e,
-    UnknownArgName :| e,
-    DuplicateArgName :| e,
-    PositionalAfterNamed :| e,
-    BadArgCount :| e
-  ) =>
   FuncEnv ->
   Unit ->
-  VEither e Unit
+  VEither AllErrs Unit
 elaborateUnit fenv (Unit name items0) = do
   -- 1. この Unit 内の TYPE 宣言を抽出
   let tys = [td | UType tds <- items0, td <- tds]
@@ -244,76 +257,217 @@ elaborateUnit fenv (Unit name items0) = do
   -- 6. Program だけ従来どおり elaborate（Function/FB は後回し）
   items' <- traverse (elabUnitItem tenv fenv) itemsWithElabTypes
   pure (Unit name items')
-  where
-    -- TypeDecl の本体を resolve
-    elabTypeDecl :: TypeEnv -> TypeDecl -> VEither e TypeDecl
-    elabTypeDecl tenv0 (TypeDecl n t) =
-      TypeDecl n <$> resolveType tenv0 t
 
-    -- items 内の UType を、順番を維持したまま tys' で置き換える
-    replaceTypes :: [UnitItem] -> [TypeDecl] -> [UnitItem]
-    replaceTypes [] _ = []
-    replaceTypes (UType oldTds : xs) tds =
-      let (here, rest) = splitAt (length oldTds) tds
-       in UType here : replaceTypes xs rest
-    replaceTypes (x : xs) tds =
-      x : replaceTypes xs tds
-    -- tys' が余っても無視（基本ありえない前提）
+-- TypeDecl の本体を resolve
+elabTypeDecl ::
+  ( TypeCycle :| e,
+    UnknownType :| e
+  ) =>
+  TypeEnv -> TypeDecl -> VEither e TypeDecl
+elabTypeDecl tenv0 (TypeDecl n t) =
+  TypeDecl n <$> resolveType tenv0 t
 
-    -- TLProgram だけ従来の elaborate を適用
-    elabUnitItem :: TypeEnv -> FuncEnv -> UnitItem -> VEither e UnitItem
-    elabUnitItem tenv fenv' = \case
-      UProgram p -> UProgram <$> elaborateProgram tenv fenv p
-      -- A の段階では FUNCTION / FB は「まだ意味論を定義しない」のでそのまま返す
-      UFunction f -> pure (UFunction f)
-      UFunctionBlock fb -> pure (UFunctionBlock fb)
-      -- TYPE はすでに replaceTypes 済みなのでそのまま
-      t@(UType _) -> pure t
+replaceTypes :: [UnitItem] -> [TypeDecl] -> [UnitItem]
+replaceTypes [] _ = []
+replaceTypes (UType oldTds : xs) tds =
+  let (here, rest) = splitAt (length oldTds) tds
+   in UType here : replaceTypes xs rest
+replaceTypes (x : xs) tds =
+  x : replaceTypes xs tds
 
-    -- 旧 elaborateUnit 本体を Program 単位に切り出したもの
-    elaborateProgram :: TypeEnv -> FuncEnv -> Program -> VEither e Program
-    elaborateProgram tenv fenv' (Program n vds body) = do
-      -- 型解決済み VarDecls
-      vds'@(VarDecls vs) <- resolveVarTypes tenv vds
+elabUnitItem :: TypeEnv -> FuncEnv -> UnitItem -> VEither AllErrs UnitItem
+elabUnitItem tenv fenv = \case
+  UProgram p -> UProgram <$> elaborateProgram tenv fenv p
+  UFunction f -> UFunction <$> elaborateFunction tenv fenv f
+  UFunctionBlock fb -> pure (UFunctionBlock fb)
+  -- TYPE はすでに replaceTypes 済みなのでそのまま
+  t@(UType _) -> pure t
 
-      -- VarEnv 構築（重複チェック込み）
-      venv <- foldM (insertVar n) M.empty vs
+-- 旧 elaborateUnit 本体を Program 単位に切り出したもの
+elaborateProgram ::
+  TypeEnv -> FuncEnv -> Program -> VEither AllErrs Program
+elaborateProgram tenv fenv (Program n vds body) = do
+  -- 型解決済み VarDecls
+  vds'@(VarDecls vs) <- resolveVarTypes tenv vds
 
-      let env =
-            Env
-              { envTypes = tenv,
-                envVars = venv,
-                envFuncs = fenv
-              }
+  -- VarEnv 構築（重複チェック込み）
+  venv <- foldM (insertVar n) M.empty vs
 
-      -- 初期化子チェック＆デフォルト付与
-      vs'' <- traverse (elabVar env) vs
+  let env =
+        Env
+          { envTypes = tenv,
+            envVars = venv,
+            envFuncs = fenv
+          }
 
-      -- ステートメント検査
-      mapM_ (checkStmt env) body
+  -- 初期化子チェック＆デフォルト付与
+  vs'' <- traverse (elabVar env) vs
 
-      pure (Program n (VarDecls vs'') body)
+  -- ステートメント検査
+  mapM_ (checkStmt env) body
 
-    insertVar :: Text -> VarEnv -> Variable -> VEither e VarEnv
-    insertVar progName m v = do
-      let vname = locVal (varName v)
-          sp = locSpan (varName v)
-      case M.lookup vname m of
-        Just _ ->
-          VEither.fromLeft $ DuplicateVar vname sp
-        Nothing ->
-          pure $
-            M.insert
-              vname
-              VarInfo
-                { viType = varType v,
-                  viSpan = sp,
-                  viKind = varKind v,
-                  viInit = varInit v,
-                  viConst = varConst v,
-                  viRetain = varRetain v
-                }
-              m
+  pure (Program n (VarDecls vs'') body)
+
+insertVar ::
+  (DuplicateVar :| e) =>
+  Text -> VarEnv -> Variable -> VEither e VarEnv
+insertVar progName m v = do
+  let vname = locVal (varName v)
+      sp = locSpan (varName v)
+  case M.lookup vname m of
+    Just _ ->
+      VEither.fromLeft $ DuplicateVar vname sp
+    Nothing ->
+      pure $
+        M.insert
+          vname
+          VarInfo
+            { viType = varType v,
+              viSpan = sp,
+              viKind = varKind v,
+              viInit = varInit v,
+              viConst = varConst v,
+              viRetain = varRetain v
+            }
+          m
+
+sigTyToSTType :: SigTy -> Maybe STType
+sigTyToSTType = \case
+  SigMono t -> Just t
+  _ -> Nothing
+
+elaborateFunction ::
+  ( InternalError :| e,
+    UnsupportedGenericReturn :| e,
+    DuplicateVar :| e,
+    OutOfRange :| e,
+    TypeMismatch :| e,
+    TypeMismatch' :| e,
+    InvalidCaseRange :| e,
+    AssignToLoopVar :| e,
+    OverlappingCase :| e,
+    UnknownVar :| e,
+    AssignToConst :| e,
+    UnknownStructMember :| e,
+    NotAStruct :| e,
+    BadIndexCount :| e,
+    WhyDidYouComeHere :| e,
+    UnknownEnumMember :| e,
+    NotAnEnum :| e,
+    NotAnArray :| e,
+    IndexOutOfBounds :| e,
+    NonConstantExpr :| e,
+    UnknownFunction :| e,
+    ArgTypeMismatch :| e,
+    UnknownArgName :| e,
+    DuplicateArgName :| e,
+    PositionalAfterNamed :| e,
+    BadArgCount :| e,
+    MissingReturn :| e,
+    TypeCycle :| e,
+    UnknownType :| e
+  ) =>
+  TypeEnv -> FuncEnv -> Function -> VEither e Function
+elaborateFunction tenv fenv fn = do
+  let fname = funcName fn
+      fvds = funcVarDecls fn
+      fbody = fBody fn
+  -- 1. 自分のシグネチャ取得
+  sig <- case M.lookup fname fenv of
+    Nothing -> VEither.fromLeft $ InternalError $ "FuncSig not found for FUNCTION " <> fname
+    Just sig -> pure sig
+
+  -- 2. 戻り値型の確認（fsRet は B で funcRetType から作ってるはずなので一応整合チェック）
+  retTyST <- case fsRet sig of
+    Just sigTy ->
+      case sigTyToSTType sigTy of
+        Just t -> pure t
+        Nothing -> VEither.fromLeft $ UnsupportedGenericReturn fname
+    -- ここで「ANY返り値のユーザー定義FUNCTIONはまだ対応してないです」と落とす
+    Nothing ->
+      VEither.fromLeft $ InternalError $ "FUNCTION " <> fname <> " has no return type in FuncSig"
+
+  -- 必要なら funcRetType を resolve して retTySig と一致するか確認
+  -- （ここでは B 側で作ったので一致してる前提でもOK）
+  -- let retTyDeclared = resolveType tenv funcRetType
+  -- when (retTyDeclared /= retTySig) (Left (MismatchedFuncRetType ...))
+
+  -- 3. 変数宣言の型解決
+  vds'@(VarDecls vs) <- resolveVarTypes tenv fvds
+
+  -- 4. VarEnv 構築（DuplicateVar などは insertVar に任せる）
+  venv0 <- foldM (insertVar fname) M.empty vs
+
+  -- 5. 暗黙の戻り値変数（関数名と同名）を追加
+  --    既にユーザーが同名を宣言してたらエラーにしてよい（仕様次第）
+  let retVarInfo =
+        VarInfo
+          { viType = retTyST,
+            viSpan = noSpan,
+            viKind = VKLocal,
+            viConst = False,
+            viRetain = False,
+            viInit = Nothing
+          }
+  venv1 <-
+    case M.lookup (funcName fn) venv0 of
+      Just _ -> VEither.fromLeft (DuplicateVar fname (viSpan retVarInfo))
+      Nothing -> pure (M.insert fname retVarInfo venv0)
+
+  -- 6. この FUNCTION 用 Env
+  let env =
+        Env
+          { envTypes = tenv,
+            envVars = venv1,
+            envFuncs = fenv
+          }
+
+  -- 7. 本体のステートメントを検査
+  mapM_ (checkStmt env) fbody
+
+  -- 8. 戻り値が一度も代入されていない場合はエラー（ざっくりバージョン）
+  unless (hasReturnAssign fname fbody) $
+    VEither.fromLeft $
+      MissingReturn fname
+
+  -- 9. resolve 済み VarDecls を差し込んだ Function を返す
+  pure fn {funcVarDecls = vds'}
+
+hasReturnAssign :: Text -> [Statement] -> Bool
+hasReturnAssign fname = any (stmtAssignsTo fname)
+
+stmtAssignsTo :: Text -> Statement -> Bool
+stmtAssignsTo fname = \case
+  Assign lv _ -> lvalueWritesTo fname lv
+  If _ th elsifs els ->
+    any (stmtAssignsTo fname) th
+      || any (any (stmtAssignsTo fname) . snd) elsifs
+      || any (stmtAssignsTo fname) els
+  While _ body ->
+    any (stmtAssignsTo fname) body
+  Repeat body _ ->
+    any (stmtAssignsTo fname) body
+  Case _ arms els ->
+    any (caseArmAssignsTo fname) arms
+      || any (stmtAssignsTo fname) els
+  For _ _ _ _ body ->
+    any (stmtAssignsTo fname) body
+  Skip ->
+    False
+
+caseArmAssignsTo :: Text -> CaseArm -> Bool
+caseArmAssignsTo fname (CaseArm _ stmts) =
+  any (stmtAssignsTo fname) stmts
+
+lvalueWritesTo :: Text -> LValue -> Bool
+lvalueWritesTo fname = \case
+  -- 関数名そのものへの代入:
+  LVar ident -> locVal ident == fname
+  -- 配列 / フィールド / ネストしていても、最終的な「ベース変数」が関数名なら return 扱い:
+  LIndex lv _ -> lvalueWritesTo fname lv
+  LField lv _ -> lvalueWritesTo fname lv
+
+-- 必要なら他のコンストラクタもここで fname まで潜る
 
 buildFuncEnvFromUnit ::
   forall e.
@@ -1800,3 +1954,8 @@ instantiateSigTy _tenv subst (SigGen gst tv) =
       GSTAnyString -> STRING Nothing
       GSTAnyDate -> DATE
       GSTAnyDuration -> TIME
+
+noSpan :: Span
+noSpan = Span dummyPos dummyPos
+  where
+    dummyPos = initialPos "<no-span>"
