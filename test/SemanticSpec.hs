@@ -23,16 +23,16 @@ import Vary (Vary, into, (:|))
 import Vary.VEither (VEither (VLeft, VRight))
 
 elaborateUnitTest :: Unit -> VEither AllErrs Unit
-elaborateUnitTest = elaborateUnit M.empty
+elaborateUnitTest = elaborateUnitWithDecls M.empty
 
 elaborateProgramTest :: Program -> VEither AllErrs Program
 elaborateProgramTest = elaborateProgramTestWithTypes M.empty
 
 elaborateProgramTestWithTypes :: FuncEnv -> Program -> VEither AllErrs Program
 elaborateProgramTestWithTypes fenv prog =
-  case elaborateUnit fenv (Unit "" [UProgram prog]) of
-    VRight (Unit _ [UProgram p']) -> VRight p'
-    VRight (Unit _ ps) ->
+  case elaborateUnitWithDecls fenv (Unit [UProgram prog]) of
+    VRight (Unit [UProgram p']) -> VRight p'
+    VRight (Unit ps) ->
       -- 基本ここには来ない想定だけど、一応保険
       error $ "elaborateProgramTestWithFuns: expected exactly one program, got " <> show (length ps)
     VLeft e -> VLeft e
@@ -134,7 +134,7 @@ expectUnitPassWithFuns funs src =
     Left e -> expectationFailure (show e)
     Right u ->
       let v :: VEither AllErrs Unit
-          v = elaborateUnit funs u
+          v = elaborateUnitWithDecls funs u
        in shouldSucceedV v
 
 -- 失敗を期待（型だけ指定、詳細は見ない）
@@ -147,7 +147,7 @@ expectUnitFailWithFuns funs src =
     Left e -> expectationFailure (show e)
     Right u ->
       let v :: VEither AllErrs Unit
-          v = elaborateUnit funs u
+          v = elaborateUnitWithDecls funs u
        in shouldFail @err v
 
 -- 失敗を期待（この型で、かつ中身も predicate でチェック）
@@ -160,7 +160,7 @@ expectUnitFailWithDetailWithFuns funs src pred' =
     Left e -> expectationFailure (show e)
     Right u ->
       let v :: VEither AllErrs Unit
-          v = elaborateUnit funs u
+          v = elaborateUnitWithDecls funs u
        in shouldFailWithDetail @err v pred'
 
 main :: IO ()
@@ -312,7 +312,7 @@ main = hspec $ do
           let vu :: VEither AllErrs Unit
               vu = elaborateUnitTest u
            in vu `shouldSatisfy` \case
-                VRight (Unit _ items) ->
+                VRight (Unit items) ->
                   case [v | UProgram (Program _ (VarDecls [v]) _) <- items] of
                     [v] -> varType v == INT && varInit v == Just (EINT 0)
                     _ -> False
@@ -469,7 +469,7 @@ main = hspec $ do
             \PROGRAM P\nVAR c: Color; END_VAR\n"
       expectParsedUnit src $ \u ->
         case elaborateUnitTest u :: VEither AllErrs Unit of
-          VRight (Unit _ items) ->
+          VRight (Unit items) ->
             -- TopLevel から Program を一個だけ拾う
             case [v | UProgram (Program _ (VarDecls [v]) _) <- items] of
               [v] ->

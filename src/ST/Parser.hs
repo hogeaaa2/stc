@@ -100,15 +100,15 @@ parseUnit = parse (sc *> pUnit <* eof) "<input>"
 pUnit :: Parser Unit
 pUnit = do
   items <- many pUnitItem
-  pure $ Unit {uPath = "", uItems = items}
+  pure $ Unit items
 
-pUnitItem :: Parser UnitItem
+pUnitItem :: Parser POU
 pUnitItem =
   choice
-    [ UType <$> try pTypeDecl,
-      UProgram <$> try pProgram,
-      UFunctionBlock <$> try pFunctionBlock,
-      UFunction <$> pFunction
+    [ POUType <$> try pTypeDecl,
+      POUProgram <$> try pProgram,
+      POUFunctionBlock <$> try pFunctionBlock,
+      POUFunction <$> pFunction
     ]
 
 pTypeDecl :: Parser [TypeDecl]

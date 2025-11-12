@@ -7,6 +7,7 @@
 
 module ST.Semantic
   ( elaborateUnit,
+    elaborateUnitWithDecls,
     nominalEq,
     FuncEnv,
     FuncSig (..),
@@ -239,24 +240,42 @@ type AllErrs =
     UnsupportedGenericReturn
   ]
 
+-- elaborateUnitStandalone :: Unit -> VEither AllErrs Unit
+-- elaborateUnitStandalone u = do
+--   tenv <- typeEnvFromUnit u
+--   fenv <- funcEnvFromUnit tenv M.empty u
+--   elaborateUnit tenv fenv u
+
 elaborateUnit ::
+  TypeEnv -> FuncEnv -> Unit -> VEither AllErrs Unit
+elaborateUnit tenv fenv (Unit items0) = do
+  items' <- traverse (elaboratePOU tenv fenv) items0
+  pure (Unit items')
+
+-- - TYPE を解決して tenv 作る
+-- - その結果を Unit に反映
+-- - funcEnvFromUnit で baseFenv + ユーザー定義POU の FuncEnv を作る
+-- - レイヤーB elaboratePOU で本体チェック
+elaborateUnitWithDecls ::
   FuncEnv ->
   Unit ->
   VEither AllErrs Unit
-elaborateUnit fenv (Unit name items0) = do
+elaborateUnitWithDecls baseFenv (Unit items0) = do
   -- 1. この Unit 内の TYPE 宣言を抽出
-  let tys = [td | UType tds <- items0, td <- tds]
+  let tys = [td | POUType tds <- items0, td <- tds]
   -- 2. TYPE 同士の参照解決用の一時環境（生の宣言ベース）
   let tenv0 = typeEnvOf tys
   -- 3. 各 TYPE の本体を解決して正規化
   tys' <- traverse (elabTypeDecl tenv0) tys
   -- 4. 正規化済み TYPE から最終 TypeEnv を構築
   let tenv = typeEnvOf tys'
-  -- 5. 元の items の順序を保ったまま TLType を差し替える
+  -- 5. 元の items の順序を保ったまま UType を差し替える
   let itemsWithElabTypes = replaceTypes items0 tys'
+  -- この Unit 内の FUNCTION / FB から FuncEnv 構築
+  fenv <- funcEnvFromUnit tenv baseFenv (Unit itemsWithElabTypes)
   -- 6. Program だけ従来どおり elaborate（Function/FB は後回し）
-  items' <- traverse (elabUnitItem tenv fenv) itemsWithElabTypes
-  pure (Unit name items')
+  items' <- traverse (elaboratePOU tenv fenv) itemsWithElabTypes
+  pure (Unit items')
 
 -- TypeDecl の本体を resolve
 elabTypeDecl ::
@@ -267,21 +286,21 @@ elabTypeDecl ::
 elabTypeDecl tenv0 (TypeDecl n t) =
   TypeDecl n <$> resolveType tenv0 t
 
-replaceTypes :: [UnitItem] -> [TypeDecl] -> [UnitItem]
+replaceTypes :: [POU] -> [TypeDecl] -> [POU]
 replaceTypes [] _ = []
-replaceTypes (UType oldTds : xs) tds =
+replaceTypes (POUType oldTds : xs) tds =
   let (here, rest) = splitAt (length oldTds) tds
-   in UType here : replaceTypes xs rest
+   in POUType here : replaceTypes xs rest
 replaceTypes (x : xs) tds =
   x : replaceTypes xs tds
 
-elabUnitItem :: TypeEnv -> FuncEnv -> UnitItem -> VEither AllErrs UnitItem
-elabUnitItem tenv fenv = \case
-  UProgram p -> UProgram <$> elaborateProgram tenv fenv p
-  UFunction f -> UFunction <$> elaborateFunction tenv fenv f
-  UFunctionBlock fb -> pure (UFunctionBlock fb)
+elaboratePOU :: TypeEnv -> FuncEnv -> POU -> VEither AllErrs POU
+elaboratePOU tenv fenv = \case
+  POUProgram p -> POUProgram <$> elaborateProgram tenv fenv p
+  POUFunction f -> POUFunction <$> elaborateFunction tenv fenv f
+  POUFunctionBlock fb -> pure (POUFunctionBlock fb)
   -- TYPE はすでに replaceTypes 済みなのでそのまま
-  t@(UType _) -> pure t
+  t@(POUType _) -> pure t
 
 -- 旧 elaborateUnit 本体を Program 単位に切り出したもの
 elaborateProgram ::
@@ -469,15 +488,25 @@ lvalueWritesTo fname = \case
 
 -- 必要なら他のコンストラクタもここで fname まで潜る
 
-buildFuncEnvFromUnit ::
+-- Unit 内の TYPE から TypeEnv を作る（解決込み）
+typeEnvFromUnit ::
+  (TypeCycle :| e, UnknownType :| e) =>
+  Unit -> VEither e TypeEnv
+typeEnvFromUnit (Unit items0) = do
+  let tys = [td | POUType tds <- items0, td <- tds]
+  let tenv0 = typeEnvOf tys
+  tys' <- traverse (\(TypeDecl n t) -> TypeDecl n <$> resolveType tenv0 t) tys
+  pure (typeEnvOf tys')
+
+funcEnvFromUnit ::
   forall e.
   ( TypeCycle :| e,
     UnknownType :| e,
     DuplicateFunction :| e
   ) =>
-  TypeEnv -> Unit -> VEither e FuncEnv
-buildFuncEnvFromUnit tenv (Unit _ items) =
-  foldM (addItem tenv) M.empty items
+  TypeEnv -> FuncEnv -> Unit -> VEither e FuncEnv
+funcEnvFromUnit tenv base (Unit items) =
+  foldM (addItem tenv) base items
 
 addItem ::
   forall e.
@@ -485,10 +514,10 @@ addItem ::
     UnknownType :| e,
     DuplicateFunction :| e
   ) =>
-  TypeEnv -> FuncEnv -> UnitItem -> VEither e FuncEnv
+  TypeEnv -> FuncEnv -> POU -> VEither e FuncEnv
 addItem tenv env = \case
-  UFunction f -> addFunction tenv env f
-  UFunctionBlock fb -> addFunctionBlock tenv env fb
+  POUFunction f -> addFunction tenv env f
+  POUFunctionBlock fb -> addFunctionBlock tenv env fb
   _ -> pure env
 
 insertFuncSig ::

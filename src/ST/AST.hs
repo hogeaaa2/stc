@@ -24,7 +24,7 @@ module ST.AST
     ConstVal (..),
     CallArg (..),
     GSTType (..),
-    UnitItem (..),
+    POU (..),
     Function (..),
     FunctionBlock (..),
   )
@@ -84,19 +84,14 @@ data TypeDecl = TypeDecl
 
 -- ルート（翻訳単位/ファイル）
 
-type UnitFilePath = Text
-
-data Unit = Unit
-  { uPath :: UnitFilePath,
-    uItems :: [UnitItem]
-  }
+newtype Unit = Unit [POU]
   deriving (Eq, Show)
 
-data UnitItem
-  = UType [TypeDecl]
-  | UProgram Program
-  | UFunction Function
-  | UFunctionBlock FunctionBlock
+data POU
+  = POUType [TypeDecl]
+  | POUProgram Program
+  | POUFunction Function
+  | POUFunctionBlock FunctionBlock
   deriving (Eq, Show)
 
 -- Minimal representation for FUNCTION declaration (POU)

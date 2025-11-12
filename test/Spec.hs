@@ -781,7 +781,7 @@ main = hspec $ do
             \  r: R := (x := 1, y := 2.0);\n\
             \END_VAR\n"
       expectRight (parseUnit src) $
-        \(Unit _ [UType _, UProgram (Program _ vds _)]) ->
+        \(Unit [UType _, UProgram (Program _ vds _)]) ->
           varSigs vds `shouldSatisfy` \case
             [("r", Named i, mi, False)] -> isJust mi && locVal i == "R"
             _ -> False
@@ -795,7 +795,7 @@ main = hspec $ do
             \END_VAR\n"
 
       expectRight (parseUnit src) $
-        \(Unit _ [UType _, UProgram (Program _ vds _)]) ->
+        \(Unit [UType _, UProgram (Program _ vds _)]) ->
           varSigs vds `shouldSatisfy` \case
             [("r", Named i, mi, False)] -> isJust mi && locVal i == "R"
             _ -> False
@@ -808,7 +808,7 @@ main = hspec $ do
             \  a: ARRAY[0..1] OF R := [(x := 1, y := 2), (x := 3, y := 4)];\n\
             \END_VAR\n"
       expectRight (parseUnit src) $
-        \(Unit _ [UType _, UProgram (Program _ vds _)]) ->
+        \(Unit [UType _, UProgram (Program _ vds _)]) ->
           varSigs vds `shouldSatisfy` \case
             [("a", Array [ArrRange 0 1] (Named i), mi, False)] -> isJust mi && locVal i == "R"
             _ -> False
