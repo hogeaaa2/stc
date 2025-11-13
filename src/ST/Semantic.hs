@@ -44,6 +44,9 @@ module ST.Semantic
     UnknownArgName (..),
     DuplicateArgName (..),
     PositionalAfterNamed (..),
+    DuplicateFunction (..),
+    MissingReturn (..),
+    UnsupportedGenericReturn (..),
   )
 where
 
@@ -240,42 +243,42 @@ type AllErrs =
     UnsupportedGenericReturn
   ]
 
--- elaborateUnitStandalone :: Unit -> VEither AllErrs Unit
--- elaborateUnitStandalone u = do
---   tenv <- typeEnvFromUnit u
---   fenv <- funcEnvFromUnit tenv M.empty u
---   elaborateUnit tenv fenv u
+elaborateUnitsWithDecls ::
+  Units -> VEither AllErrs Units
+elaborateUnitsWithDecls us = do
+  tenv <- typeEnvFromUnits us -- 全 TYPE 解決
+  fenv <- funcEnvFromUnits tenv baseFenv us -- 全 FUNCTION/FB を登録
+  traverse (elaborateUnit tenv fenv) us
+  where
+    baseFenv = M.empty -- ダミー
 
-elaborateUnit ::
-  TypeEnv -> FuncEnv -> Unit -> VEither AllErrs Unit
-elaborateUnit tenv fenv (Unit items0) = do
-  items' <- traverse (elaboratePOU tenv fenv) items0
-  pure (Unit items')
+elaborateUnits ::
+  TypeEnv -> FuncEnv -> Units -> VEither AllErrs Units
+elaborateUnits tenv fenv = traverse (elaborateUnit tenv fenv)
 
 -- - TYPE を解決して tenv 作る
 -- - その結果を Unit に反映
 -- - funcEnvFromUnit で baseFenv + ユーザー定義POU の FuncEnv を作る
--- - レイヤーB elaboratePOU で本体チェック
+-- - レイヤーB elaborateUnit で本体チェック
 elaborateUnitWithDecls ::
   FuncEnv ->
   Unit ->
   VEither AllErrs Unit
-elaborateUnitWithDecls baseFenv (Unit items0) = do
-  -- 1. この Unit 内の TYPE 宣言を抽出
-  let tys = [td | POUType tds <- items0, td <- tds]
-  -- 2. TYPE 同士の参照解決用の一時環境（生の宣言ベース）
+elaborateUnitWithDecls baseFenv u0 = do
+  -- 1. この Unit 内の TYPE 群を抽出
+  let tys = case u0 of UType tds -> tds; _ -> []
+  -- 2. TYPE 相互参照解決用の一時環境（この Unit の宣言のみ）
   let tenv0 = typeEnvOf tys
   -- 3. 各 TYPE の本体を解決して正規化
   tys' <- traverse (elabTypeDecl tenv0) tys
   -- 4. 正規化済み TYPE から最終 TypeEnv を構築
   let tenv = typeEnvOf tys'
-  -- 5. 元の items の順序を保ったまま UType を差し替える
-  let itemsWithElabTypes = replaceTypes items0 tys'
-  -- この Unit 内の FUNCTION / FB から FuncEnv 構築
-  fenv <- funcEnvFromUnit tenv baseFenv (Unit itemsWithElabTypes)
-  -- 6. Program だけ従来どおり elaborate（Function/FB は後回し）
-  items' <- traverse (elaboratePOU tenv fenv) itemsWithElabTypes
-  pure (Unit items')
+  -- 5. 元の Unit を、解決済み TYPE に差し替え
+  let u1 = case u0 of UType _ -> UType tys'; other -> other
+  -- 6. この Unit 内の FUNCTION / FB から FuncEnv を拡張
+  fenv <- funcEnvFromUnit tenv baseFenv u1
+  -- 7. 既存の tenv / fenv で Unit を elaborate（Program/Function 本体検査）
+  elaborateUnit tenv fenv u1
 
 -- TypeDecl の本体を resolve
 elabTypeDecl ::
@@ -286,21 +289,35 @@ elabTypeDecl ::
 elabTypeDecl tenv0 (TypeDecl n t) =
   TypeDecl n <$> resolveType tenv0 t
 
-replaceTypes :: [POU] -> [TypeDecl] -> [POU]
-replaceTypes [] _ = []
-replaceTypes (POUType oldTds : xs) tds =
-  let (here, rest) = splitAt (length oldTds) tds
-   in POUType here : replaceTypes xs rest
-replaceTypes (x : xs) tds =
-  x : replaceTypes xs tds
+-- replaceTypes :: [Unit] -> [TypeDecl] -> [Unit]
+-- replaceTypes [] _ = []
+-- replaceTypes (UType oldTds : xs) tds =
+--   let (here, rest) = splitAt (length oldTds) tds
+--    in UType here : replaceTypes xs rest
+-- replaceTypes (x : xs) tds =
+--   x : replaceTypes xs tds
 
-elaboratePOU :: TypeEnv -> FuncEnv -> POU -> VEither AllErrs POU
-elaboratePOU tenv fenv = \case
-  POUProgram p -> POUProgram <$> elaborateProgram tenv fenv p
-  POUFunction f -> POUFunction <$> elaborateFunction tenv fenv f
-  POUFunctionBlock fb -> pure (POUFunctionBlock fb)
+-- 解決済み TypeEnv を使って、UType の中身だけを差し替える（名前照合）
+rewriteUnitTypes :: TypeEnv -> Unit -> Unit
+rewriteUnitTypes tenv = \case
+  UType tds ->
+    UType
+      [ TypeDecl n (fromMaybe t (M.lookup (locVal n) tenv))
+      | TypeDecl n t <- tds
+      ]
+  other -> other
+
+-- 複数ファイル（[Unit]）なら map するだけ
+rewriteUnitsTypes :: TypeEnv -> [Unit] -> [Unit]
+rewriteUnitsTypes tenv = map (rewriteUnitTypes tenv)
+
+elaborateUnit :: TypeEnv -> FuncEnv -> Unit -> VEither AllErrs Unit
+elaborateUnit tenv fenv = \case
+  UProgram p -> UProgram <$> elaborateProgram tenv fenv p
+  UFunction f -> UFunction <$> elaborateFunction tenv fenv f
+  UFunctionBlock fb -> pure (UFunctionBlock fb)
   -- TYPE はすでに replaceTypes 済みなのでそのまま
-  t@(POUType _) -> pure t
+  t@(UType _) -> pure t
 
 -- 旧 elaborateUnit 本体を Program 単位に切り出したもの
 elaborateProgram ::
@@ -492,11 +509,17 @@ lvalueWritesTo fname = \case
 typeEnvFromUnit ::
   (TypeCycle :| e, UnknownType :| e) =>
   Unit -> VEither e TypeEnv
-typeEnvFromUnit (Unit items0) = do
-  let tys = [td | POUType tds <- items0, td <- tds]
-  let tenv0 = typeEnvOf tys
-  tys' <- traverse (\(TypeDecl n t) -> TypeDecl n <$> resolveType tenv0 t) tys
-  pure (typeEnvOf tys')
+typeEnvFromUnit u = typeEnvFromUnits [u]
+
+-- 複数 Unit の全 TYPE を一括解決して最終 TypeEnv を返す
+typeEnvFromUnits ::
+  (TypeCycle :| e, UnknownType :| e) =>
+  Units -> VEither e TypeEnv
+typeEnvFromUnits us = do
+  let allTds = [td | UType tds <- us, td <- tds]
+  let tenv0 = typeEnvOf allTds -- 全名をまず登録
+  tds' <- traverse (\(TypeDecl n t) -> TypeDecl n <$> resolveType tenv0 t) allTds
+  pure (typeEnvOf tds')
 
 funcEnvFromUnit ::
   forall e.
@@ -505,8 +528,15 @@ funcEnvFromUnit ::
     DuplicateFunction :| e
   ) =>
   TypeEnv -> FuncEnv -> Unit -> VEither e FuncEnv
-funcEnvFromUnit tenv base (Unit items) =
-  foldM (addItem tenv) base items
+funcEnvFromUnit tenv fenv u = funcEnvFromUnits tenv fenv [u]
+
+funcEnvFromUnits ::
+  ( DuplicateFunction :| e,
+    TypeCycle :| e,
+    UnknownType :| e
+  ) =>
+  TypeEnv -> FuncEnv -> Units -> VEither e FuncEnv
+funcEnvFromUnits tenv = foldM (funcEnvFromUnit tenv)
 
 addItem ::
   forall e.
@@ -514,10 +544,10 @@ addItem ::
     UnknownType :| e,
     DuplicateFunction :| e
   ) =>
-  TypeEnv -> FuncEnv -> POU -> VEither e FuncEnv
+  TypeEnv -> FuncEnv -> Unit -> VEither e FuncEnv
 addItem tenv env = \case
-  POUFunction f -> addFunction tenv env f
-  POUFunctionBlock fb -> addFunctionBlock tenv env fb
+  UFunction f -> addFunction tenv env f
+  UFunctionBlock fb -> addFunctionBlock tenv env fb
   _ -> pure env
 
 insertFuncSig ::

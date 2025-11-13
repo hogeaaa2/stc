@@ -7,6 +7,7 @@
 module ST.Parser
   ( parseProgram,
     parseUnit,
+    parseUnits,
     identifier,
     pUnit,
     pStmt,
@@ -91,24 +92,38 @@ data DollarPolicy = DollarPolicy
 -- public functions
 ----------------------------------
 
+-- 1ファイル（path付）→ Unit
+parseUnitWithPath :: FilePath -> Text -> Either (ParseErrorBundle Text Void) Unit
+parseUnitWithPath = parse (sc *> pUnit <* eof)
+
+-- pPOU が UType / UProgram / UFunction / UFunctionBlock のどれか1つを返す
+
+-- 複数ファイル（擬似パスを自動付与）→ [Unit]
+parseUnits :: [Text] -> Either (Int, ParseErrorBundle Text Void) [Unit]
+parseUnits srcs =
+  traverse one (zip [1 ..] srcs)
+  where
+    one (i, s) = first ((,) i) $ parseUnitWithPath ("<input-" <> show i <> ">") s
+    first f = either (Left . f) Right
+
 parseProgram :: Text -> Either (ParseErrorBundle Text Void) Program
 parseProgram = parse (pProgram <* eof) "<input>"
 
 parseUnit :: Text -> Either (ParseErrorBundle Text Void) Unit
 parseUnit = parse (sc *> pUnit <* eof) "<input>"
 
-pUnit :: Parser Unit
-pUnit = do
-  items <- many pUnitItem
-  pure $ Unit items
+-- pUnit :: Parser Unit
+-- pUnit = do
+--   items <- many pUnitItem
+--   pure $ Unit items
 
-pUnitItem :: Parser POU
-pUnitItem =
+pUnit :: Parser Unit
+pUnit =
   choice
-    [ POUType <$> try pTypeDecl,
-      POUProgram <$> try pProgram,
-      POUFunctionBlock <$> try pFunctionBlock,
-      POUFunction <$> pFunction
+    [ UType <$> try pTypeDecl,
+      UProgram <$> try pProgram,
+      UFunctionBlock <$> try pFunctionBlock,
+      UFunction <$> pFunction
     ]
 
 pTypeDecl :: Parser [TypeDecl]

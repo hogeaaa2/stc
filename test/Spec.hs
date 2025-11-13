@@ -197,6 +197,14 @@ shouldRejectNum run src =
     Left _ -> pure ()
     Right _ -> expectationFailure "expected parse error (Left), but got Right"
 
+expectParsedUnits :: [Text] -> ([Unit] -> Expectation) -> Expectation
+expectParsedUnits srcs k =
+  case parseUnits srcs of
+    Left (i, e) ->
+      expectationFailure $
+        "Parse error in input-" <> show i <> ":\n" <> errorBundlePretty e
+    Right us -> k us
+
 -- tests
 
 main :: IO ()
@@ -357,13 +365,30 @@ main = hspec $ do
         shouldParse run tc
 
   describe "TYPE + VAR integration (parsing)" $ do
-    let ok =
-          [ "TYPE MyInt : INT; END_TYPE\nPROGRAM P\nVAR\nx: MyInt;\nEND_VAR\n"
+    -- 1ケース=複数ファイル（今回は TYPE と PROGRAM の2本）
+    let ok :: [[Text]]
+        ok =
+          [ [ "TYPE MyInt : INT; END_TYPE\n",
+              "PROGRAM P\nVAR\nx: MyInt;\nEND_VAR\n"
+            ]
           ]
-        run = parse (pUnit <* eof) "<test>"
-    forM_ ok $ \tc ->
-      it ("parses unit: " <> T.unpack (newlineToSpace tc)) $
-        shouldParse run tc
+
+        -- 表示用
+        renderCase :: [Text] -> String
+        renderCase =
+          T.unpack . T.intercalate " | " . map newlineToSpace
+
+    forM_ ok $ \files ->
+      it ("parses units: " <> renderCase files) $
+        case parseUnits files of
+          Left (i, e) ->
+            expectationFailure $
+              "Parse error in input-" <> show i <> ":\n" <> errorBundlePretty e
+          Right units ->
+            -- 期待：TYPEとPROGRAMの2ユニットがパースできている
+            units `shouldSatisfy` \case
+              [UType _, UProgram _] -> True
+              _ -> False
 
   describe "field access parsing" $ do
     let ok =
@@ -774,44 +799,55 @@ main = hspec $ do
             _ -> False
 
     it "parses struct aggregate with named fields" $ do
-      let src =
-            "TYPE R : STRUCT x: INT; y: LREAL; END_STRUCT; END_TYPE\n\
-            \PROGRAM P\n\
+      let srcType =
+            "TYPE R : STRUCT x: INT; y: LREAL; END_STRUCT; END_TYPE\n"
+          srcProg =
+            "PROGRAM P\n\
             \VAR\n\
             \  r: R := (x := 1, y := 2.0);\n\
             \END_VAR\n"
-      expectRight (parseUnit src) $
-        \(Unit [UType _, UProgram (Program _ vds _)]) ->
-          varSigs vds `shouldSatisfy` \case
-            [("r", Named i, mi, False)] -> isJust mi && locVal i == "R"
-            _ -> False
+      expectParsedUnits [srcType, srcProg] $ \case
+        [ UType _,
+          UProgram (Program _ vds _)
+          ] ->
+            varSigs vds `shouldSatisfy` \case
+              [("r", Named i, mi, False)] -> isJust mi && locVal i == "R"
+              _ -> False
+        other ->
+          expectationFailure $ "unexpected units: " <> show other
 
     it "parses struct aggregate in any field order" $ do
-      let src =
-            "TYPE R : STRUCT x: INT; y: LREAL; END_STRUCT; END_TYPE\n\
-            \PROGRAM P\n\
+      let srcType =
+            "TYPE R : STRUCT x: INT; y: LREAL; END_STRUCT; END_TYPE\n"
+          srcProg =
+            "PROGRAM P\n\
             \VAR\n\
             \  r: R := (y := 2.0, x := 1);\n\
             \END_VAR\n"
-
-      expectRight (parseUnit src) $
-        \(Unit [UType _, UProgram (Program _ vds _)]) ->
+      expectParsedUnits [srcType, srcProg] $ \case
+        [UType _, UProgram (Program _ vds _)] ->
           varSigs vds `shouldSatisfy` \case
             [("r", Named i, mi, False)] -> isJust mi && locVal i == "R"
             _ -> False
+        other ->
+          expectationFailure $ "unexpected units: " <> show other
 
     it "parses nested aggregate: array of structs" $ do
-      let src =
-            "TYPE R : STRUCT x: INT; y: INT; END_STRUCT; END_TYPE\n\
-            \PROGRAM P\n\
+      let srcType =
+            "TYPE R : STRUCT x: INT; y: INT; END_STRUCT; END_TYPE\n"
+          srcProg =
+            "PROGRAM P\n\
             \VAR\n\
             \  a: ARRAY[0..1] OF R := [(x := 1, y := 2), (x := 3, y := 4)];\n\
             \END_VAR\n"
-      expectRight (parseUnit src) $
-        \(Unit [UType _, UProgram (Program _ vds _)]) ->
+      expectParsedUnits [srcType, srcProg] $ \case
+        [UType _, UProgram (Program _ vds _)] ->
           varSigs vds `shouldSatisfy` \case
-            [("a", Array [ArrRange 0 1] (Named i), mi, False)] -> isJust mi && locVal i == "R"
+            [("a", Array [ArrRange 0 1] (Named i), mi, False)] ->
+              isJust mi && locVal i == "R"
             _ -> False
+        other ->
+          expectationFailure $ "unexpected units: " <> show other
 
   describe "IEC 61131-3 Date/Time literals (parsing, spec examples)" $ do
     let mk :: Text -> Text -> Text

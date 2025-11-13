@@ -12,6 +12,7 @@ module ST.AST
     Identifier,
     CaseSelector (..),
     CaseArm (..),
+    Units,
     Unit (..),
     TypeDecl (..),
     LValue (..),
@@ -24,7 +25,6 @@ module ST.AST
     ConstVal (..),
     CallArg (..),
     GSTType (..),
-    POU (..),
     Function (..),
     FunctionBlock (..),
   )
@@ -84,14 +84,13 @@ data TypeDecl = TypeDecl
 
 -- ルート（翻訳単位/ファイル）
 
-newtype Unit = Unit [POU]
-  deriving (Eq, Show)
+type Units = [Unit]
 
-data POU
-  = POUType [TypeDecl]
-  | POUProgram Program
-  | POUFunction Function
-  | POUFunctionBlock FunctionBlock
+data Unit
+  = UType [TypeDecl]
+  | UProgram Program
+  | UFunction Function
+  | UFunctionBlock FunctionBlock
   deriving (Eq, Show)
 
 -- Minimal representation for FUNCTION declaration (POU)

@@ -30,11 +30,11 @@ elaborateProgramTest = elaborateProgramTestWithTypes M.empty
 
 elaborateProgramTestWithTypes :: FuncEnv -> Program -> VEither AllErrs Program
 elaborateProgramTestWithTypes fenv prog =
-  case elaborateUnitWithDecls fenv (Unit [UProgram prog]) of
-    VRight (Unit [UProgram p']) -> VRight p'
-    VRight (Unit ps) ->
+  case elaborateUnitWithDecls fenv (UProgram prog) of
+    VRight (UProgram p') -> VRight p'
+    VRight _ ->
       -- 基本ここには来ない想定だけど、一応保険
-      error $ "elaborateProgramTestWithFuns: expected exactly one program, got " <> show (length ps)
+      error "elaborateProgramTestWithFuns: unexpected error"
     VLeft e -> VLeft e
 
 expectParsed :: Text -> (Program -> Expectation) -> Expectation
@@ -312,10 +312,8 @@ main = hspec $ do
           let vu :: VEither AllErrs Unit
               vu = elaborateUnitTest u
            in vu `shouldSatisfy` \case
-                VRight (Unit items) ->
-                  case [v | UProgram (Program _ (VarDecls [v]) _) <- items] of
-                    [v] -> varType v == INT && varInit v == Just (EINT 0)
-                    _ -> False
+                VRight (UProgram (Program _ (VarDecls [v]) _)) ->
+                  varType v == INT && varInit v == Just (EINT 0)
                 _ -> False
 
     it "fails on unknown type" $ do
@@ -469,18 +467,14 @@ main = hspec $ do
             \PROGRAM P\nVAR c: Color; END_VAR\n"
       expectParsedUnit src $ \u ->
         case elaborateUnitTest u :: VEither AllErrs Unit of
-          VRight (Unit items) ->
-            -- TopLevel から Program を一個だけ拾う
-            case [v | UProgram (Program _ (VarDecls [v]) _) <- items] of
-              [v] ->
-                case varInit v of
-                  Just (EField (EVar ty) ctor) -> do
-                    locVal ty `shouldBe` "Color"
-                    locVal ctor `shouldBe` "Red"
-                  other ->
-                    expectationFailure ("unexpected init: " <> show other)
-              _ -> expectationFailure "expected exactly one PROGRAM with one variable"
-          _ -> expectationFailure "unexpected shape of Unit"
+          VRight (UProgram (Program _ (VarDecls [v]) _)) ->
+            case varInit v of
+              Just (EField (EVar ty) ctor) -> do
+                locVal ty `shouldBe` "Color"
+                locVal ctor `shouldBe` "Red"
+              other ->
+                expectationFailure ("unexpected init: " <> show other)
+          _ -> expectationFailure "expected exactly one PROGRAM with one variable"
 
   describe "nominal identity (ENUM)" $ do
     it "rejects assigning different enum types" $ do
@@ -1725,3 +1719,43 @@ main = hspec $ do
         \PROGRAM P\nVAR r: R; END_VAR\nr.x := ID_ANY_INT(r);\n"
       $ \(ArgTypeMismatch fname _ _ _ actTy _) ->
         fname == "ID_ANY_INT" && actTy /= INT
+
+  describe "FuncEnv building" $ do
+    it "rejects duplicate function names" $ do
+      let src =
+            "FUNCTION F : INT\n\
+            \VAR_INPUT x : INT; END_VAR\n\
+            \F := x;\n\
+            \FUNCTION F : INT\n\
+            \VAR_INPUT y : INT; END_VAR\n\
+            \F := y;\n"
+      expectUnitFailWithDetail @DuplicateFunction src $
+        \(DuplicateFunction n) -> n == "F"
+
+  describe "FUNCTION body" $ do
+    it "fails with MissingReturn when no assignment to function name" $ do
+      let src =
+            "FUNCTION F : INT\n\
+            \VAR_INPUT x : INT; END_VAR\n"
+      expectUnitFailWithDetail @MissingReturn src $
+        \(MissingReturn n) -> n == "F"
+
+    let funsAnyRet =
+          M.fromList
+            [ ( "G",
+                FuncSig
+                  { fsName = "G",
+                    fsKind = FKFunction,
+                    fsArgs = [("x", SigMono REAL)],
+                    fsRet = Just $ SigGen GSTAnyInt (TV 0) -- ★ 具体型でない
+                  }
+              )
+            ]
+
+    it "fails with UnsupportedGenericReturn when callee returns ANY_*" $ do
+      let src =
+            "PROGRAM P\n\
+            \VAR y : REAL; END_VAR\n\
+            \y := G(1.0);\n"
+      expectUnitFailWithDetailWithFuns @UnsupportedGenericReturn funsAnyRet src $
+        \(UnsupportedGenericReturn n) -> n == "G"
