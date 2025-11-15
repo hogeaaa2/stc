@@ -2,12 +2,12 @@
 {-# OPTIONS_GHC -Wno-partial-fields #-}
 {-# OPTIONS_GHC -Wno-unrecognised-pragmas #-}
 
-{-# HLINT ignore "Use fromMaybe" #-}
+{-# HLINT ignore "Use tuple-section" #-}
 
 module ST.Parser
   ( parseProgram,
-    parseUnit,
-    parseUnits,
+    parseUnit',
+    parseUnits',
     identifier,
     pUnit,
     pStmt,
@@ -24,6 +24,7 @@ import Control.Monad.Combinators.Expr
   ( Operator (..),
     makeExprParser,
   )
+import Data.Bifunctor (first)
 import Data.Char (isAsciiLower, isAsciiUpper, isDigit, isHexDigit, isOctDigit, toUpper)
 import Data.Functor (($>))
 import Data.List (isInfixOf)
@@ -92,25 +93,27 @@ data DollarPolicy = DollarPolicy
 -- public functions
 ----------------------------------
 
--- 1ファイル（path付）→ Unit
-parseUnitWithPath :: FilePath -> Text -> Either (ParseErrorBundle Text Void) Unit
-parseUnitWithPath = parse (sc *> pUnit <* eof)
-
--- pPOU が UType / UProgram / UFunction / UFunctionBlock のどれか1つを返す
+parseUnits ::
+  [(FilePath, Text)] ->
+  Either (FilePath, ParseErrorBundle Text Void) [Unit]
+parseUnits = traverse (\(fp, src) -> first (\e -> (fp, e)) (parseUnit fp src))
 
 -- 複数ファイル（擬似パスを自動付与）→ [Unit]
-parseUnits :: [Text] -> Either (Int, ParseErrorBundle Text Void) [Unit]
-parseUnits srcs =
+parseUnits' :: [Text] -> Either (Int, ParseErrorBundle Text Void) [Unit]
+parseUnits' srcs =
   traverse one (zip [1 ..] srcs)
   where
-    one (i, s) = first ((,) i) $ parseUnitWithPath ("<input-" <> show i <> ">") s
-    first f = either (Left . f) Right
+    one (i, s) = first' ((,) i) $ parseUnit ("<input-" <> show i <> ">") s
+    first' f = either (Left . f) Right
 
 parseProgram :: Text -> Either (ParseErrorBundle Text Void) Program
 parseProgram = parse (pProgram <* eof) "<input>"
 
-parseUnit :: Text -> Either (ParseErrorBundle Text Void) Unit
-parseUnit = parse (sc *> pUnit <* eof) "<input>"
+parseUnit :: FilePath -> Text -> Either (ParseErrorBundle Text Void) Unit
+parseUnit = parse (sc *> pUnit <* eof)
+
+parseUnit' :: Text -> Either (ParseErrorBundle Text Void) Unit
+parseUnit' = parse (sc *> pUnit <* eof) "<input>"
 
 -- pUnit :: Parser Unit
 -- pUnit = do
@@ -145,7 +148,7 @@ pProgram = do
   vds <- some pVarDecls
   let vars = concat [vs | VarDecls vs <- vds]
   body <- many pStmt
-  pure (Program (locVal pn) (VarDecls vars) body)
+  pure (Program pn (VarDecls vars) body)
 
 pVarDecls :: Parser VarDecls
 pVarDecls = lexeme $ do
@@ -167,7 +170,7 @@ pFunction = do
   vds <- some pVarDecls
   let vars = concat [vs | VarDecls vs <- vds]
   body <- many pStmt
-  pure (Function (locVal fname) ftype (VarDecls vars) body)
+  pure (Function fname ftype (VarDecls vars) body)
 
 pFunctionBlock :: Parser FunctionBlock
 pFunctionBlock = lexeme $ do
@@ -177,7 +180,7 @@ pFunctionBlock = lexeme $ do
   let vars = concat [vs | VarDecls vs <- vds]
   body <- many pStmt
   _ <- optional (symbol "END_FUNCTION_BLOCK")
-  pure (FunctionBlock (locVal fbname) (VarDecls vars) body)
+  pure (FunctionBlock fbname (VarDecls vars) body)
 
 pStmt :: Parser Statement
 pStmt = withRecovery recover pStmtCore
@@ -349,7 +352,7 @@ pReal = lexeme $ do
     let digits = d0 : ds
     pure (e : maybeToList s ++ stripUnders digits)
 
-  let numStr = stripUnders intPart ++ "." ++ stripUnders fracPart ++ maybe "" id mExp
+  let numStr = stripUnders intPart ++ "." ++ stripUnders fracPart ++ fromMaybe "" mExp
   pure (read numStr)
 
 ----------------------------------
@@ -570,9 +573,9 @@ brackets = between (symbol "[") (symbol "]")
 
 identifier :: Parser Identifier
 identifier = withSpan $ lexeme $ do
-  first <- choice [l, usld]
+  firstTxt <- choice [l, usld]
   rest <- many $ choice [ld, usld]
-  let result = T.append first (T.concat rest)
+  let result = T.append firstTxt (T.concat rest)
    in if not $ Set.member (T.toUpper result) reserved
         then pure result
         else do
@@ -894,7 +897,7 @@ pWhile :: Parser Statement
 pWhile = do
   _ <- symbol "WHILE"
   mc <- softLabel "Condition" pExpr
-  let cond = maybe (EBOOL True) id mc
+  let cond = fromMaybe (EBOOL True) mc
   kw "DO"
   body <- manyTill pStmt ((void . lookAhead $ symbol "END_WHILE") <|> eof)
   r <- observing (symbol "END_WHILE")
@@ -913,7 +916,7 @@ pRepeat = do
     Right _ -> pure ()
     Left _ -> registerExpectLabel "UNTIL"
   mc <- softLabel "Condition" pExpr
-  let cond = maybe (EBOOL True) id mc
+  let cond = fromMaybe (EBOOL True) mc
   rE <- observing (symbol "END_REPEAT")
   case rE of
     Right _ -> pure (Repeat body cond)
@@ -997,13 +1000,13 @@ pFor = do
 
   -- ② end 式：無ければ Expression を 1 回登録し、0 で続行
   mE1 <- softLabel "Expression" pExpr
-  let e1 = maybe (EINT 0) id mE1
+  let e1 = fromMaybe (EINT 0) mE1
 
   -- ③ BY があれば step 式：無ければ Expression を登録し、1 にフォールバック
   mby <- optional $ do
     _ <- symbol "BY"
     me <- softLabel "Expression" pExpr
-    pure (maybe (EINT 1) id me)
+    pure (fromMaybe (EINT 1) me)
 
   kw "DO" -- 必須
 

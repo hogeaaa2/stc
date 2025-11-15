@@ -67,7 +67,7 @@ data VarInfo = VarInfo
   deriving (Show, Eq)
 
 data Program = Program
-  { progName :: Text,
+  { progName :: Identifier,
     progVarDecls :: VarDecls,
     progBody :: [Statement]
   }
@@ -93,18 +93,16 @@ data Unit
   | UFunctionBlock FunctionBlock
   deriving (Eq, Show)
 
--- Minimal representation for FUNCTION declaration (POU)
 data Function = Function
-  { funcName :: Text,
+  { funcName :: Identifier,
     funcRetType :: STType,
     funcVarDecls :: VarDecls,
     fBody :: [Statement]
   }
   deriving (Eq, Show)
 
--- Minimal representation for FUNCTION_BLOCK declaration (POU)
 data FunctionBlock = FunctionBlock
-  { fbName :: Text,
+  { fbName :: Identifier,
     fbVarDecls :: VarDecls,
     fbBody :: [Statement]
   }

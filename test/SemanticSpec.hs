@@ -15,12 +15,26 @@ import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Typeable (Typeable, typeRep)
 import ST.AST
-import ST.Parser (parseProgram, parseUnit)
+import ST.Parser (parseProgram, parseUnit', parseUnits')
 import ST.Semantic
 import Test.Hspec
-import Text.Megaparsec.Pos (initialPos)
+import Text.Megaparsec
 import Vary (Vary, into, (:|))
 import Vary.VEither (VEither (VLeft, VRight))
+
+toIdent :: Text -> Identifier
+toIdent txt =
+  let start = initialPos "<test>" -- 行=1, 列=1
+      end = start {sourceColumn = mkPos (1 + T.length txt)}
+   in Loc (Span start end) txt
+
+elaborateProjectTest :: FuncEnv -> [Text] -> VEither AllErrs [Unit]
+elaborateProjectTest fenv srcs =
+  case parseUnits' srcs of
+    Left (i, e) ->
+      error $ "parse error in input-" <> show i <> ":\n" <> errorBundlePretty e
+    Right us ->
+      elaborateUnits fenv us
 
 elaborateUnitTest :: Unit -> VEither AllErrs Unit
 elaborateUnitTest = elaborateUnitWithDecls M.empty
@@ -44,7 +58,7 @@ expectParsed src k = case parseProgram src of
 
 expectParsedUnit :: Text -> (Unit -> Expectation) -> Expectation
 expectParsedUnit src k =
-  case parseUnit src of
+  case parseUnit' src of
     Left e -> expectationFailure (show e)
     Right u -> k u
 
@@ -55,7 +69,7 @@ prj = Vary.into @err
 
 -- 成功/失敗（型に依存しないやつは曖昧性なし）
 shouldSucceedV :: VEither es a -> Expectation
-shouldSucceedV v = case v of
+shouldSucceedV = \case
   VRight _ -> pure ()
   VLeft _ -> expectationFailure "expected VRight, got VLeft"
 
@@ -93,7 +107,7 @@ shouldFail v = shouldFailWithDetail @err v (const True)
 
 expectUnitPass :: Text -> Expectation
 expectUnitPass src =
-  case parseUnit src of
+  case parseUnit' src of
     Left e -> expectationFailure (show e)
     Right u ->
       let v :: VEither AllErrs Unit
@@ -105,7 +119,7 @@ expectUnitFail ::
   (err :| AllErrs, Typeable err) =>
   Text -> Expectation
 expectUnitFail src =
-  case parseUnit src of
+  case parseUnit' src of
     Left e -> expectationFailure (show e)
     Right u ->
       let v :: VEither AllErrs Unit
@@ -117,7 +131,7 @@ expectUnitFailWithDetail ::
   (err :| AllErrs, Typeable err) =>
   Text -> (err -> Bool) -> Expectation
 expectUnitFailWithDetail src pred' =
-  case parseUnit src of
+  case parseUnit' src of
     Left e -> expectationFailure (show e)
     Right u ->
       let v :: VEither AllErrs Unit
@@ -130,7 +144,7 @@ expectUnitFailWithDetail src pred' =
 -- 成功を期待（関数シグネチャ付き）
 expectUnitPassWithFuns :: FuncEnv -> Text -> Expectation
 expectUnitPassWithFuns funs src =
-  case parseUnit src of
+  case parseUnit' src of
     Left e -> expectationFailure (show e)
     Right u ->
       let v :: VEither AllErrs Unit
@@ -143,7 +157,7 @@ expectUnitFailWithFuns ::
   (err :| AllErrs, Typeable err) =>
   FuncEnv -> Text -> Expectation
 expectUnitFailWithFuns funs src =
-  case parseUnit src of
+  case parseUnit' src of
     Left e -> expectationFailure (show e)
     Right u ->
       let v :: VEither AllErrs Unit
@@ -156,11 +170,66 @@ expectUnitFailWithDetailWithFuns ::
   (err :| AllErrs, Typeable err) =>
   FuncEnv -> Text -> (err -> Bool) -> Expectation
 expectUnitFailWithDetailWithFuns funs src pred' =
-  case parseUnit src of
+  case parseUnit' src of
     Left e -> expectationFailure (show e)
     Right u ->
       let v :: VEither AllErrs Unit
           v = elaborateUnitWithDecls funs u
+       in shouldFailWithDetail @err v pred'
+
+-- Units版
+
+expectParsedUnits :: [Text] -> ([Unit] -> Expectation) -> Expectation
+expectParsedUnits srcs k =
+  case parseUnits' srcs of
+    Left e -> expectationFailure (show e)
+    Right u -> k u
+
+expectUnitsPass :: [Text] -> Expectation
+expectUnitsPass srcs =
+  case parseUnits' srcs of
+    Left e -> expectationFailure (show e)
+    Right us ->
+      let v :: VEither AllErrs Units
+          v = elaborateUnits M.empty us
+       in shouldSucceedV v
+
+expectUnitsFail ::
+  forall err.
+  (err :| AllErrs, Typeable err) =>
+  [Text] -> Expectation
+expectUnitsFail srcs =
+  case parseUnits' srcs of
+    Left e -> expectationFailure (show e)
+    Right us ->
+      let v :: VEither AllErrs Units
+          v = elaborateUnits M.empty us
+       in shouldFail @err v
+
+expectUnitsFailWithDetail ::
+  forall err.
+  (err :| AllErrs, Typeable err) =>
+  [Text] -> (err -> Bool) -> Expectation
+expectUnitsFailWithDetail srcs pred' =
+  case parseUnits' srcs of
+    Left (i, e) ->
+      expectationFailure $
+        "Parse error in input-" <> show i <> ":\n" <> errorBundlePretty e
+    Right us ->
+      let v :: VEither AllErrs Units
+          v = elaborateUnits M.empty us
+       in shouldFailWithDetail @err v pred'
+
+expectUnitsFailWithDetail'' ::
+  forall err.
+  (err :| AllErrs, Typeable err) =>
+  FuncEnv -> [Text] -> (err -> Bool) -> Expectation
+expectUnitsFailWithDetail'' funs srcs pred' =
+  case parseUnits' srcs of
+    Left e -> expectationFailure (show e)
+    Right us ->
+      let v :: VEither AllErrs Units
+          v = elaborateUnits funs us
        in shouldFailWithDetail @err v pred'
 
 main :: IO ()
@@ -305,16 +374,16 @@ main = hspec $ do
 
   describe "TYPE resolution (semantics)" $ do
     it "resolves alias in VAR and fills default init" $ do
-      let src = "TYPE MyInt : INT; END_TYPE\nPROGRAM P\nVAR\nx: MyInt;\nEND_VAR\n"
-      case parseUnit src of
-        Left e -> expectationFailure (show e)
-        Right u ->
-          let vu :: VEither AllErrs Unit
-              vu = elaborateUnitTest u
-           in vu `shouldSatisfy` \case
-                VRight (UProgram (Program _ (VarDecls [v]) _)) ->
-                  varType v == INT && varInit v == Just (EINT 0)
-                _ -> False
+      let srcs =
+            [ "TYPE MyInt : INT; END_TYPE\n",
+              "PROGRAM P\nVAR\nx: MyInt;\nEND_VAR\n"
+            ]
+      elaborateProjectTest M.empty srcs `shouldSatisfy` \case
+        VRight us ->
+          case [v | UProgram (Program _ (VarDecls [v]) _) <- us] of
+            [v] -> varType v == INT && varInit v == Just (EINT 0)
+            _ -> False
+        _ -> False
 
     it "fails on unknown type" $ do
       let src = "PROGRAM P\nVAR\nx: Foo;\nEND_VAR\n"
@@ -322,24 +391,29 @@ main = hspec $ do
         \(UnknownType tname _) -> tname == "Foo"
 
     it "fails on type cycle" $ do
-      let src = "TYPE A : B; B : A; END_TYPE\nPROGRAM P\nVAR\nx: A;\nEND_VAR\n"
-      expectUnitFailWithDetail @TypeCycle src $
+      let srcs =
+            [ "TYPE A : B; B : A; END_TYPE\n",
+              "PROGRAM P\nVAR\nx: A;\nEND_VAR\n"
+            ]
+      expectUnitsFailWithDetail @TypeCycle srcs $
         \(TypeCycle tname _) -> tname == "B"
 
   describe "STRUCT field access (semantics)" $ do
     it "allows reading r.a when r: STRUCT{a:INT}" $ do
-      let src =
-            "TYPE R : STRUCT a: INT; END_STRUCT; END_TYPE\n\
-            \PROGRAM P\nVAR\nr: R; x: INT;\nEND_VAR\n\
+      let srcType =
+            "TYPE R : STRUCT a: INT; END_STRUCT; END_TYPE\n"
+          srcProg =
+            "PROGRAM P\nVAR\nr: R; x: INT;\nEND_VAR\n\
             \x := r.a;\n"
-      expectUnitPass src
+      expectUnitsPass [srcType, srcProg]
 
     it "rejects unknown field r.z" $ do
-      let src =
-            "TYPE R : STRUCT a: INT; END_STRUCT; END_TYPE\n\
-            \PROGRAM P\nVAR\nr: R; x: INT;\nEND_VAR\n\
-            \x := r.z;\n"
-      expectUnitFailWithDetail @UnknownStructMember src $
+      let srcs =
+            [ "TYPE R : STRUCT a: INT; END_STRUCT; END_TYPE\n",
+              "PROGRAM P\nVAR\nr: R; x: INT;\nEND_VAR\n\
+              \x := r.z;\n"
+            ]
+      expectUnitsFailWithDetail @UnknownStructMember srcs $
         \(UnknownStructMember _ member _) -> member == "z"
 
     it "rejects r.a when r is INT (not a struct)" $ do
@@ -350,19 +424,21 @@ main = hspec $ do
 
   describe "array/struct semantics" $ do
     it "accepts struct field - read and write" $ do
-      let src =
-            "TYPE Point : STRUCT x: INT; y: BOOL; END_STRUCT; END_TYPE\n\
-            \PROGRAM P\nVAR r: Point; x: INT; y: BOOL; END_VAR\n\
-            \x := r.x; y := r.y;\n\
-            \r.x := 1; r.y := TRUE;\n"
-      expectUnitPass src
+      let srcs =
+            [ "TYPE Point : STRUCT x: INT; y: BOOL; END_STRUCT; END_TYPE\n",
+              "PROGRAM P\nVAR r: Point; x: INT; y: BOOL; END_VAR\n\
+              \x := r.x; y := r.y;\n\
+              \r.x := 1; r.y := TRUE;\n"
+            ]
+      expectUnitsPass srcs
 
     it "rejects unknown field" $ do
-      let src =
-            "TYPE Point : STRUCT x: INT; END_STRUCT; END_TYPE\n\
-            \PROGRAM P\nVAR r: Point; END_VAR\n\
-            \r.z := 1;\n"
-      expectUnitFail @UnknownStructMember src
+      let srcs =
+            [ "TYPE Point : STRUCT x: INT; END_STRUCT; END_TYPE\n",
+              "PROGRAM P\nVAR r: Point; END_VAR\n\
+              \r.z := 1;\n"
+            ]
+      expectUnitsFail @UnknownStructMember srcs
 
     it "accepts array index" $ do
       let src =
@@ -422,85 +498,98 @@ main = hspec $ do
 
   describe "ENUM semantics" $ do
     it "accepts assignment and equality" $ do
-      let src =
-            "TYPE Color : (Red, Green); END_TYPE\n\
-            \PROGRAM P\nVAR c: Color; END_VAR\n\
-            \c := Color.Red;\n\
-            \IF c = Color.Red THEN c := Color.Green; END_IF\n"
-      expectUnitPass src
+      let srcs =
+            [ "TYPE Color : (Red, Green); END_TYPE\n",
+              "PROGRAM P\nVAR c: Color; END_VAR\n\
+              \c := Color.Red;\n\
+              \IF c = Color.Red THEN c := Color.Green; END_IF\n"
+            ]
+      expectUnitsPass srcs
 
     it "rejects unknown enum value" $ do
-      let src =
-            "TYPE Color : (Red, Green); END_TYPE\n\
-            \PROGRAM P\nVAR c: Color; END_VAR\n\
-            \c := Color.Blue;\n"
-      expectUnitFailWithDetail @UnknownEnumMember src $
+      let srcs =
+            [ "TYPE Color : (Red, Green); END_TYPE\n",
+              "PROGRAM P\nVAR c: Color; END_VAR\n\
+              \c := Color.Blue;\n"
+            ]
+      expectUnitsFailWithDetail @UnknownEnumMember srcs $
         \(UnknownEnumMember ename mname _) -> ename == "Color" && mname == "Blue"
 
     it "rejects Type.Ctor when Type is not enum" $ do
-      let src =
-            "TYPE MyInt : INT; END_TYPE\n\
-            \PROGRAM P\nVAR x: INT; END_VAR\n\
-            \x := MyInt.X;\n"
-      expectUnitFailWithDetail @NotAnEnum src $
+      let srcs =
+            [ "TYPE MyInt : INT; END_TYPE\n",
+              "PROGRAM P\nVAR x: INT; END_VAR\n\
+              \x := MyInt.X;\n"
+            ]
+      expectUnitsFailWithDetail @NotAnEnum srcs $
         \(NotAnEnum name _ _) -> name == "MyInt"
 
   describe "CASE with ENUM semantics" $ do
     it "accepts CASE with enum selectors" $ do
-      let src =
-            "TYPE Color : (Red, Green); END_TYPE\n\
-            \PROGRAM P\nVAR c: Color; x: INT; END_VAR\n\
-            \CASE c OF Color.Red: x := 1; ELSE x := 0; END_CASE\n"
-      expectUnitPass src
+      let srcs =
+            [ "TYPE Color : (Red, Green); END_TYPE\n",
+              "PROGRAM P\nVAR c: Color; x: INT; END_VAR\n\
+              \CASE c OF Color.Red: x := 1; ELSE x := 0; END_CASE\n"
+            ]
+      expectUnitsPass srcs
 
     it "rejects mixing INT selector for enum scrutinee" $ do
-      let src =
-            "TYPE Color : (Red, Green); END_TYPE\n\
-            \PROGRAM P\nVAR c:Color; x:INT; END_VAR\n\
-            \CASE c OF 0: x := 1; END_CASE\n"
-      expectUnitFail @TypeMismatch' src
+      let srcs =
+            [ "TYPE Color : (Red, Green); END_TYPE\n",
+              "PROGRAM P\nVAR c:Color; x:INT; END_VAR\n\
+              \CASE c OF 0: x := 1; END_CASE\n"
+            ]
+      expectUnitsFail @TypeMismatch' srcs
 
   describe "Enum default init" $ do
     it "fills first enumerator as default init" $ do
-      let src =
-            "TYPE Color : (Red, Green); END_TYPE\n\
-            \PROGRAM P\nVAR c: Color; END_VAR\n"
-      expectParsedUnit src $ \u ->
-        case elaborateUnitTest u :: VEither AllErrs Unit of
-          VRight (UProgram (Program _ (VarDecls [v]) _)) ->
-            case varInit v of
-              Just (EField (EVar ty) ctor) -> do
-                locVal ty `shouldBe` "Color"
-                locVal ctor `shouldBe` "Red"
-              other ->
-                expectationFailure ("unexpected init: " <> show other)
-          _ -> expectationFailure "expected exactly one PROGRAM with one variable"
+      let srcs =
+            [ "TYPE Color : (Red, Green); END_TYPE\n",
+              "PROGRAM P\nVAR c: Color; END_VAR\n"
+            ]
+      expectParsedUnits srcs $ \us ->
+        case (elaborateUnits M.empty us :: VEither AllErrs [Unit]) of
+          VLeft e -> expectationFailure (show e)
+          VRight units ->
+            case [v | UProgram (Program _ (VarDecls [v]) _) <- units] of
+              [v] ->
+                case varInit v of
+                  Just (EField (EVar ty) ctor) -> do
+                    locVal ty `shouldBe` "Color"
+                    locVal ctor `shouldBe` "Red"
+                  other ->
+                    expectationFailure ("unexpected init: " <> show other)
+              _ ->
+                expectationFailure "expected exactly one PROGRAM with one variable"
 
   describe "nominal identity (ENUM)" $ do
     it "rejects assigning different enum types" $ do
-      let src =
-            "TYPE A : (X,Y); END_TYPE\n\
-            \TYPE B : (X,Y); END_TYPE\n\
-            \PROGRAM P\nVAR a: A; b: B; END_VAR\n\
-            \a := B.X;\n"
-      expectUnitFailWithDetail @TypeMismatch src $
+      let srcs =
+            [ "TYPE A : (X,Y); END_TYPE\n",
+              "TYPE B : (X,Y); END_TYPE\n",
+              "PROGRAM P\nVAR a: A; b: B; END_VAR\n\
+              \a := B.X;\n"
+            ]
+      expectUnitsFailWithDetail @TypeMismatch srcs $
         \(TypeMismatch _ _ (Named nA) (Named nB)) -> locVal nA == "A" && locVal nB == "B"
 
     it "accepts equality for same enum name" $ do
-      let src =
-            "TYPE A : (X); END_TYPE\n\
-            \TYPE B : (X); END_TYPE\n\
-            \PROGRAM P\nVAR a: A; END_VAR\n\
-            \IF a = A.X THEN a := A.X; END_IF\n"
-      expectUnitPass src
+      let srcs =
+            [ "TYPE A : (X); END_TYPE\n",
+              "TYPE B : (X); END_TYPE\n",
+              "PROGRAM P\nVAR a: A; END_VAR\n\
+              \IF a = A.X THEN a := A.X; END_IF\n"
+            ]
+      expectUnitsPass srcs
 
     it "rejects equality for different enum name" $ do
-      let src =
-            "TYPE A : (X); END_TYPE\n\
-            \TYPE B : (X); END_TYPE\n\
-            \PROGRAM P\nVAR a: A; END_VAR\n\
-            \IF a = B.X THEN a := A.X; END_IF\n"
-      expectUnitFailWithDetail @TypeMismatch' src $
+      let srcs =
+            [ "TYPE A : (X); END_TYPE\n",
+              "TYPE B : (X); END_TYPE\n",
+              "PROGRAM P\nVAR a: A; END_VAR\n\
+              \IF a = B.X THEN a := A.X; END_IF\n"
+            ]
+      expectUnitsFailWithDetail @TypeMismatch' srcs $
         \(TypeMismatch' (Named nB)) -> locVal nB == "B"
 
   describe "Nominal type equality" $ do
@@ -540,34 +629,38 @@ main = hspec $ do
 
   describe "ENUM explicit values (semantics integration)" $ do
     it "accepts assignment to an enum with explicit values" $ do
-      let src =
-            "TYPE Color : (Red := 0, Green := 2); END_TYPE\n\
-            \PROGRAM P\nVAR c: Color; END_VAR\n\
-            \c := Color.Green;\n"
-      expectUnitPass src
+      let srcs =
+            [ "TYPE Color : (Red := 0, Green := 2); END_TYPE\n",
+              "PROGRAM P\nVAR c: Color; END_VAR\n\
+              \c := Color.Green;\n"
+            ]
+      expectUnitsPass srcs
 
     it "rejects unknown enum value even with explicit values" $ do
-      let src =
-            "TYPE Color : (Red := 0, Green := 2); END_TYPE\n\
-            \PROGRAM P\nVAR c: Color; END_VAR\n\
-            \c := Color.Blue;\n"
-      expectUnitFailWithDetail @UnknownEnumMember src $
+      let srcs =
+            [ "TYPE Color : (Red := 0, Green := 2); END_TYPE\n",
+              "PROGRAM P\nVAR c: Color; END_VAR\n\
+              \c := Color.Blue;\n"
+            ]
+      expectUnitsFailWithDetail @UnknownEnumMember srcs $
         \(UnknownEnumMember nA nB _) -> nA == "Color" && nB == "Blue"
 
   describe "ENUM explicit values with expressions (semantics integration)" $ do
     it "accepts assignment using an enumerator with explicit expr value" $ do
-      let src =
-            "TYPE Color : (Red := 1+2*3, Green := (1+2)*3); END_TYPE\n\
-            \PROGRAM P\nVAR c: Color; END_VAR\n\
-            \c := Color.Green;\n"
-      expectUnitPass src
+      let srcs =
+            [ "TYPE Color : (Red := 1+2*3, Green := (1+2)*3); END_TYPE\n",
+              "PROGRAM P\nVAR c: Color; END_VAR\n\
+              \c := Color.Green;\n"
+            ]
+      expectUnitsPass srcs
 
     it "still rejects unknown ctor even with explicit expr values" $ do
-      let src =
-            "TYPE Color : (Red := 0, Green := 2); END_TYPE\n\
-            \PROGRAM P\nVAR c: Color; END_VAR\n\
-            \c := Color.Blue;\n"
-      expectUnitFailWithDetail @UnknownEnumMember src $
+      let srcs =
+            [ "TYPE Color : (Red := 0, Green := 2); END_TYPE\n",
+              "PROGRAM P\nVAR c: Color; END_VAR\n\
+              \c := Color.Blue;\n"
+            ]
+      expectUnitsFailWithDetail @UnknownEnumMember srcs $
         \(UnknownEnumMember nA nB _) -> nA == "Color" && nB == "Blue"
 
   describe "MOD/XOR semantics" $ do
@@ -690,26 +783,29 @@ main = hspec $ do
       expectUnitPass src
 
     it "rejects enum selector when scrutinee is INT" $ do
-      let src =
-            "TYPE Color : (Red, Green); END_TYPE\n\
-            \PROGRAM P\nVAR x: INT; END_VAR\n\
-            \CASE x OF Color.Red: ; END_CASE\n"
-      expectUnitFail @TypeMismatch' src
+      let srcs =
+            [ "TYPE Color : (Red, Green); END_TYPE\n",
+              "PROGRAM P\nVAR x: INT; END_VAR\n\
+              \CASE x OF Color.Red: ; END_CASE\n"
+            ]
+      expectUnitsFail @TypeMismatch' srcs
 
     it "accepts enum scrutinee with matching enum constructors" $ do
-      let src =
-            "TYPE Color : (Red, Green); END_TYPE\n\
-            \PROGRAM P\nVAR c: Color; END_VAR\n\
-            \CASE c OF Color.Red: ; Color.Green: ; END_CASE\n"
-      expectUnitPass src
+      let srcs =
+            [ "TYPE Color : (Red, Green); END_TYPE\n",
+              "PROGRAM P\nVAR c: Color; END_VAR\n\
+              \CASE c OF Color.Red: ; Color.Green: ; END_CASE\n"
+            ]
+      expectUnitsPass srcs
 
     it "rejects mismatched enum type in selector" $ do
-      let src =
-            "TYPE Color : (Red, Green); END_TYPE\n\
-            \TYPE Shape : (Circle); END_TYPE\n\
-            \PROGRAM P\nVAR c: Color; END_VAR\n\
-            \CASE c OF Shape.Circle: ; END_CASE\n"
-      expectUnitFail @TypeMismatch' src
+      let srcs =
+            [ "TYPE Color : (Red, Green); END_TYPE\n",
+              "TYPE Shape : (Circle); END_TYPE\n",
+              "PROGRAM P\nVAR c: Color; END_VAR\n\
+              \CASE c OF Shape.Circle: ; END_CASE\n"
+            ]
+      expectUnitsFail @TypeMismatch' srcs
 
     it "rejects BOOL scrutinee (only INT or enum allowed)" $ do
       let src =
@@ -784,19 +880,21 @@ main = hspec $ do
       expectUnitFail @NonConstantExpr src
 
     it "accepts enum labels from a constant of that enum" $ do
-      let src =
-            "TYPE Color : (Red, Green); END_TYPE\n\
-            \PROGRAM P\nVAR c: Color; END_VAR\n\
-            \VAR CONSTANT kc: Color := Color.Red; END_VAR\n\
-            \CASE c OF kc: ; END_CASE\n"
-      expectUnitPass src
+      let srcs =
+            [ "TYPE Color : (Red, Green); END_TYPE\n",
+              "PROGRAM P\nVAR c: Color; END_VAR\n\
+              \VAR CONSTANT kc: Color := Color.Red; END_VAR\n\
+              \CASE c OF kc: ; END_CASE\n"
+            ]
+      expectUnitsPass srcs
 
     it "rejects INT constant expression for enum scrutinee" $ do
-      let src =
-            "TYPE Color : (Red, Green); END_TYPE\n\
-            \PROGRAM P\nVAR c: Color; END_VAR\n\
-            \CASE c OF 1+2: ; END_CASE\n"
-      expectUnitFail @TypeMismatch' src
+      let srcs =
+            [ "TYPE Color : (Red, Green); END_TYPE\n",
+              "PROGRAM P\nVAR c: Color; END_VAR\n\
+              \CASE c OF 1+2: ; END_CASE\n"
+            ]
+      expectUnitsFail @TypeMismatch' srcs
 
     it "rejects indexer in label (not a constant expression)" $ do
       -- y は非定数。v[0] は「式」だがコンパイル時定数ではない。
@@ -1377,32 +1475,36 @@ main = hspec $ do
 
   describe "Struct aggregate initialization (semantics)" $ do
     it "accepts exact fields in any order" $ do
-      let src =
-            "TYPE R : STRUCT x: INT; y: LREAL; END_STRUCT; END_TYPE\n\
-            \PROGRAM P\n\
-            \VAR r1: R := (x := 1, y := 2.0); r2: R := (y := 2.0, x := 1); END_VAR\n"
-      expectUnitPass src
+      let srcs =
+            [ "TYPE R : STRUCT x: INT; y: LREAL; END_STRUCT; END_TYPE\n",
+              "PROGRAM P\n\
+              \VAR r1: R := (x := 1, y := 2.0); r2: R := (y := 2.0, x := 1); END_VAR\n"
+            ]
+      expectUnitsPass srcs
 
     it "accepts missing fields (fills omitted with defaults)" $ do
-      let src =
-            "TYPE R : STRUCT x: INT; y: INT; END_STRUCT; END_TYPE\n\
-            \PROGRAM P\n\
-            \VAR r: R := (x := 1); END_VAR\n"
-      expectUnitPass src
+      let srcs =
+            [ "TYPE R : STRUCT x: INT; y: INT; END_STRUCT; END_TYPE\n",
+              "PROGRAM P\n\
+              \VAR r: R := (x := 1); END_VAR\n"
+            ]
+      expectUnitsPass srcs
 
     it "rejects unknown field in aggregate" $ do
-      let src =
-            "TYPE R : STRUCT x: INT; y: INT; END_STRUCT; END_TYPE\n\
-            \PROGRAM P\n\
-            \VAR r: R := (x := 1, z := 0); END_VAR\n"
-      expectUnitFail @UnknownStructMember src
+      let srcs =
+            [ "TYPE R : STRUCT x: INT; y: INT; END_STRUCT; END_TYPE\n",
+              "PROGRAM P\n\
+              \VAR r: R := (x := 1, z := 0); END_VAR\n"
+            ]
+      expectUnitsFail @UnknownStructMember srcs
 
     it "allows field-wise promotion (INT -> LREAL)" $ do
-      let src =
-            "TYPE R : STRUCT x: INT; y: LREAL; END_STRUCT; END_TYPE\n\
-            \PROGRAM P\n\
-            \VAR r: R := (x := 1, y := 2); END_VAR\n"
-      expectUnitPass src
+      let srcs =
+            [ "TYPE R : STRUCT x: INT; y: LREAL; END_STRUCT; END_TYPE\n",
+              "PROGRAM P\n\
+              \VAR r: R := (x := 1, y := 2); END_VAR\n"
+            ]
+      expectUnitsPass srcs
 
   describe "Static index bounds checking (semantics)" $ do
     it "flags out-of-bounds when both bounds and index are constants (literal)" $ do
@@ -1532,15 +1634,15 @@ main = hspec $ do
         funsSimple :: FuncEnv
         funsSimple =
           M.fromList
-            [ ("ADD", FuncSig {fsName = "ADD", fsArgs = [("x", SigMono INT), ("y", SigMono INT)], fsRet = Just (SigMono INT), fsKind = FKFunction}),
-              ("SUB", FuncSig {fsName = "SUB", fsArgs = [("x", SigMono INT), ("y", SigMono INT)], fsRet = Just (SigMono INT), fsKind = FKFunction}),
-              ("NOP", FuncSig {fsName = "NOP", fsArgs = [], fsRet = Just (SigMono INT), fsKind = FKFunction})
+            [ ("ADD", FuncSig {fsName = toIdent "ADD", fsArgs = [("x", SigMono INT), ("y", SigMono INT)], fsRet = Just (SigMono INT), fsKind = FKFunction}),
+              ("SUB", FuncSig {fsName = toIdent "SUB", fsArgs = [("x", SigMono INT), ("y", SigMono INT)], fsRet = Just (SigMono INT), fsKind = FKFunction}),
+              ("NOP", FuncSig {fsName = toIdent "NOP", fsArgs = [], fsRet = Just (SigMono INT), fsKind = FKFunction})
             ]
 
         funsReal :: FuncEnv
         funsReal =
           M.fromList
-            [ ("MIX", FuncSig {fsName = "MIX", fsArgs = [("a", SigMono INT), ("b", SigMono REAL)], fsRet = Just (SigMono REAL), fsKind = FKFunction})
+            [ ("MIX", FuncSig {fsName = toIdent "MIX", fsArgs = [("a", SigMono INT), ("b", SigMono REAL)], fsRet = Just (SigMono REAL), fsKind = FKFunction})
             ]
         -- 成功ケース
         ok =
@@ -1617,7 +1719,7 @@ main = hspec $ do
             [ -- ID_INT: IN : ANY_INT -> SAME_TYPE
               ( "ID_ANY_INT",
                 FuncSig
-                  { fsName = "ID_ANY_INT",
+                  { fsName = toIdent "ID_ANY_INT",
                     fsArgs = [("IN", SigGen GSTAnyInt (TV 0))],
                     fsRet = Just $ SigGen GSTAnyInt (TV 0),
                     fsKind = FKFunction
@@ -1626,7 +1728,7 @@ main = hspec $ do
               -- ADD_NUM: X,Y : ANY_NUM (同じ型) -> SAME_TYPE
               ( "ADD_ANY_NUM",
                 FuncSig
-                  { fsName = "ADD_ANY_NUM",
+                  { fsName = toIdent "ADD_ANY_NUM",
                     fsArgs =
                       [ ("X", SigGen GSTAnyNum (TV 0)),
                         ("Y", SigGen GSTAnyNum (TV 0))
@@ -1638,7 +1740,7 @@ main = hspec $ do
               -- SEL_ANY: G:BOOL, IN0/IN1: ANY (同じ型) -> SAME_TYPE
               ( "SEL_ANY",
                 FuncSig
-                  { fsName = "SEL_ANY",
+                  { fsName = toIdent "SEL_ANY",
                     fsArgs =
                       [ ("G", SigMono BOOL),
                         ("IN0", SigGen GSTAny (TV 0)),
@@ -1652,7 +1754,7 @@ main = hspec $ do
               -- 「別 TVar は独立に選べる」をテストする用
               ( "PAIR2",
                 FuncSig
-                  { fsName = "PAIR2",
+                  { fsName = toIdent "PAIR2",
                     fsArgs =
                       [ ("A", SigGen GSTAnyInt (TV 0)),
                         ("B", SigGen GSTAnyInt (TV 1))
@@ -1713,23 +1815,25 @@ main = hspec $ do
         "PROGRAM P\nVAR a: INT; b: DINT; ok: BOOL; END_VAR\nok := PAIR2(a, b);\n"
 
     it "rejects struct for ID_ANY_INT"
-      $ expectUnitFailWithDetailWithFuns @ArgTypeMismatch
+      $ expectUnitsFailWithDetail'' @ArgTypeMismatch
         funsAny
-        "TYPE R : STRUCT x: INT; END_STRUCT; END_TYPE\n\
-        \PROGRAM P\nVAR r: R; END_VAR\nr.x := ID_ANY_INT(r);\n"
+        [ "TYPE R : STRUCT x: INT; END_STRUCT; END_TYPE\n",
+          "PROGRAM P\nVAR r: R; END_VAR\nr.x := ID_ANY_INT(r);\n"
+        ]
       $ \(ArgTypeMismatch fname _ _ _ actTy _) ->
         fname == "ID_ANY_INT" && actTy /= INT
 
   describe "FuncEnv building" $ do
     it "rejects duplicate function names" $ do
-      let src =
-            "FUNCTION F : INT\n\
-            \VAR_INPUT x : INT; END_VAR\n\
-            \F := x;\n\
-            \FUNCTION F : INT\n\
-            \VAR_INPUT y : INT; END_VAR\n\
-            \F := y;\n"
-      expectUnitFailWithDetail @DuplicateFunction src $
+      let srcs =
+            [ "FUNCTION F : INT\n\
+              \VAR_INPUT x : INT; END_VAR\n\
+              \F := x;\n",
+              "FUNCTION F : INT\n\
+              \VAR_INPUT y : INT; END_VAR\n\
+              \F := y;\n"
+            ]
+      expectUnitsFailWithDetail @DuplicateFunction srcs $
         \(DuplicateFunction n) -> n == "F"
 
   describe "FUNCTION body" $ do
@@ -1744,7 +1848,7 @@ main = hspec $ do
           M.fromList
             [ ( "G",
                 FuncSig
-                  { fsName = "G",
+                  { fsName = toIdent "G",
                     fsKind = FKFunction,
                     fsArgs = [("x", SigMono REAL)],
                     fsRet = Just $ SigGen GSTAnyInt (TV 0) -- ★ 具体型でない
@@ -1754,8 +1858,34 @@ main = hspec $ do
 
     it "fails with UnsupportedGenericReturn when callee returns ANY_*" $ do
       let src =
-            "PROGRAM P\n\
-            \VAR y : REAL; END_VAR\n\
-            \y := G(1.0);\n"
-      expectUnitFailWithDetailWithFuns @UnsupportedGenericReturn funsAnyRet src $
+            [ "PROGRAM P\n\
+              \VAR y : REAL; END_VAR\n\
+              \y := G(1.0);\n"
+            ]
+      expectUnitsFailWithDetail'' @UnsupportedGenericReturn funsAnyRet src $
         \(UnsupportedGenericReturn n) -> n == "G"
+
+  describe "NoReturnValue (semantics)" $ do
+    it "errors when using a no-return function in expression position (RHS of assign)" $ do
+      let srcs =
+            [ "PROGRAM P\n\
+              \VAR x : INT; END_VAR\n\
+              \x := PROC(1);\n"
+            ]
+
+          funsNoRet :: FuncEnv
+          funsNoRet =
+            M.fromList
+              [ ( "PROC",
+                  FuncSig
+                    { fsName = toIdent "PROC",
+                      fsKind = FKFunction,
+                      fsArgs = [("x", SigMono INT)],
+                      fsRet = Nothing
+                    }
+                )
+              ]
+
+      expectUnitsFailWithDetail'' @NoReturnValue funsNoRet srcs $
+        \case
+          NoReturnValue _ name -> name == "PROC"

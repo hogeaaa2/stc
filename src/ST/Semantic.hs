@@ -7,7 +7,9 @@
 
 module ST.Semantic
   ( elaborateUnit,
+    elaborateUnits,
     elaborateUnitWithDecls,
+    elaborateUnitsWithDecls,
     nominalEq,
     FuncEnv,
     FuncSig (..),
@@ -47,13 +49,14 @@ module ST.Semantic
     DuplicateFunction (..),
     MissingReturn (..),
     UnsupportedGenericReturn (..),
+    NoReturnValue (..),
   )
 where
 
 import Control.Monad (foldM, forM, forM_, guard, unless, when)
 import Data.List (sortOn)
 import Data.Map.Strict qualified as M
-import Data.Maybe (catMaybes, fromJust, fromMaybe)
+import Data.Maybe (catMaybes, fromMaybe)
 import Data.Set qualified as Set
 import Data.Text (Text)
 import Data.Text qualified as T
@@ -100,7 +103,7 @@ data FuncKind
   deriving (Eq, Show)
 
 data FuncSig = FuncSig
-  { fsName :: Text,
+  { fsName :: Identifier,
     fsKind :: FuncKind,
     fsArgs :: [(Text, SigTy)], -- 位置/名前付きの両対応。例: [("x", INT), ("y", INT)]
     fsRet :: Maybe SigTy
@@ -208,6 +211,8 @@ newtype MissingReturn = MissingReturn FunctionName deriving (Eq, Show)
 
 newtype UnsupportedGenericReturn = UnsupportedGenericReturn FunctionName deriving (Eq, Show)
 
+data NoReturnValue = NoReturnValue FilePath FunctionName deriving (Eq, Show)
+
 type AllErrs =
   [ AssignToConst,
     AssignToLoopVar,
@@ -240,21 +245,20 @@ type AllErrs =
     DuplicateFunction,
     InternalError,
     MissingReturn,
-    UnsupportedGenericReturn
+    UnsupportedGenericReturn,
+    NoReturnValue
   ]
 
-elaborateUnitsWithDecls ::
-  Units -> VEither AllErrs Units
-elaborateUnitsWithDecls us = do
+elaborateUnits ::
+  FuncEnv -> Units -> VEither AllErrs Units
+elaborateUnits baseFenv us = do
   tenv <- typeEnvFromUnits us -- 全 TYPE 解決
   fenv <- funcEnvFromUnits tenv baseFenv us -- 全 FUNCTION/FB を登録
   traverse (elaborateUnit tenv fenv) us
-  where
-    baseFenv = M.empty -- ダミー
 
-elaborateUnits ::
+elaborateUnitsWithDecls ::
   TypeEnv -> FuncEnv -> Units -> VEither AllErrs Units
-elaborateUnits tenv fenv = traverse (elaborateUnit tenv fenv)
+elaborateUnitsWithDecls tenv fenv = traverse (elaborateUnit tenv fenv)
 
 -- - TYPE を解決して tenv 作る
 -- - その結果を Unit に反映
@@ -324,10 +328,12 @@ elaborateProgram ::
   TypeEnv -> FuncEnv -> Program -> VEither AllErrs Program
 elaborateProgram tenv fenv (Program n vds body) = do
   -- 型解決済み VarDecls
+  -- trace "1: resolveVarTypes" $ pure ()
   vds'@(VarDecls vs) <- resolveVarTypes tenv vds
 
   -- VarEnv 構築（重複チェック込み）
-  venv <- foldM (insertVar n) M.empty vs
+  -- trace "2: build VarEnv" $ pure ()
+  venv <- foldM (insertVar $ locVal n) M.empty vs
 
   let env =
         Env
@@ -337,11 +343,13 @@ elaborateProgram tenv fenv (Program n vds body) = do
           }
 
   -- 初期化子チェック＆デフォルト付与
+  -- trace "3: elabVar" $ pure ()
   vs'' <- traverse (elabVar env) vs
 
   -- ステートメント検査
+  -- trace "4: checkStmt" $ pure ()
   mapM_ (checkStmt env) body
-
+  -- trace "5: done" $ pure ()
   pure (Program n (VarDecls vs'') body)
 
 insertVar ::
@@ -373,8 +381,7 @@ sigTyToSTType = \case
   _ -> Nothing
 
 elaborateFunction ::
-  ( InternalError :| e,
-    UnsupportedGenericReturn :| e,
+  ( UnsupportedGenericReturn :| e,
     DuplicateVar :| e,
     OutOfRange :| e,
     TypeMismatch :| e,
@@ -401,33 +408,36 @@ elaborateFunction ::
     BadArgCount :| e,
     MissingReturn :| e,
     TypeCycle :| e,
-    UnknownType :| e
+    UnknownType :| e,
+    NoReturnValue :| e
   ) =>
   TypeEnv -> FuncEnv -> Function -> VEither e Function
 elaborateFunction tenv fenv fn = do
-  let fname = funcName fn
+  let fname = locVal $ funcName fn
       fvds = funcVarDecls fn
       fbody = fBody fn
-  -- 1. 自分のシグネチャ取得
-  sig <- case M.lookup fname fenv of
-    Nothing -> VEither.fromLeft $ InternalError $ "FuncSig not found for FUNCTION " <> fname
-    Just sig -> pure sig
+  -- -- 1. 自分のシグネチャ取得
+  -- sig <- case M.lookup fname fenv of
+  --   Nothing -> VEither.fromLeft $ InternalError $ "FuncSig not found for FUNCTION " <> fname
+  --   Just sig -> pure sig
 
-  -- 2. 戻り値型の確認（fsRet は B で funcRetType から作ってるはずなので一応整合チェック）
-  retTyST <- case fsRet sig of
-    Just sigTy ->
-      case sigTyToSTType sigTy of
-        Just t -> pure t
-        Nothing -> VEither.fromLeft $ UnsupportedGenericReturn fname
-    -- ここで「ANY返り値のユーザー定義FUNCTIONはまだ対応してないです」と落とす
-    Nothing ->
-      VEither.fromLeft $ InternalError $ "FUNCTION " <> fname <> " has no return type in FuncSig"
+  -- -- 2. 戻り値型の確認
+  -- retTyST <- case fsRet sig of
+  --   Just sigTy ->
+  --     case sigTyToSTType sigTy of
+  --       Just t -> pure t
+  --       Nothing -> VEither.fromLeft $ UnsupportedGenericReturn fname
+  --   -- ここで「ANY返り値のユーザー定義FUNCTIONはまだ対応してないです」と落とす
+  --   Nothing ->
+  --     VEither.fromLeft $ InternalError $ "FUNCTION " <> fname <> " has no return type in FuncSig"
 
   -- 必要なら funcRetType を resolve して retTySig と一致するか確認
   -- （ここでは B 側で作ったので一致してる前提でもOK）
   -- let retTyDeclared = resolveType tenv funcRetType
   -- when (retTyDeclared /= retTySig) (Left (MismatchedFuncRetType ...))
 
+  -- 自分の宣言を解決するだけ
+  retTyST <- resolveType tenv (funcRetType fn)
   -- 3. 変数宣言の型解決
   vds'@(VarDecls vs) <- resolveVarTypes tenv fvds
 
@@ -446,7 +456,7 @@ elaborateFunction tenv fenv fn = do
             viInit = Nothing
           }
   venv1 <-
-    case M.lookup (funcName fn) venv0 of
+    case M.lookup fname venv0 of
       Just _ -> VEither.fromLeft (DuplicateVar fname (viSpan retVarInfo))
       Nothing -> pure (M.insert fname retVarInfo venv0)
 
@@ -522,13 +532,15 @@ typeEnvFromUnits us = do
   pure (typeEnvOf tds')
 
 funcEnvFromUnit ::
-  forall e.
-  ( TypeCycle :| e,
-    UnknownType :| e,
-    DuplicateFunction :| e
+  ( DuplicateFunction :| e,
+    TypeCycle :| e,
+    UnknownType :| e
   ) =>
   TypeEnv -> FuncEnv -> Unit -> VEither e FuncEnv
-funcEnvFromUnit tenv fenv u = funcEnvFromUnits tenv fenv [u]
+funcEnvFromUnit tenv fenv = \case
+  UFunction f -> addFunction tenv fenv f
+  UFunctionBlock fb -> addFunctionBlock tenv fenv fb
+  _ -> pure fenv -- UType / UProgram は環境変更なし
 
 funcEnvFromUnits ::
   ( DuplicateFunction :| e,
@@ -554,7 +566,7 @@ insertFuncSig ::
   (DuplicateFunction :| e) =>
   FuncSig -> FuncEnv -> VEither e FuncEnv
 insertFuncSig sig env =
-  let name = fsName sig
+  let name = locVal $ fsName sig
    in case M.lookup name env of
         Just _ -> VEither.fromLeft (DuplicateFunction name)
         Nothing -> pure (M.insert name sig env)
@@ -889,7 +901,9 @@ inferType ::
     UnknownArgName :| e,
     DuplicateArgName :| e,
     PositionalAfterNamed :| e,
-    BadArgCount :| e
+    BadArgCount :| e,
+    UnsupportedGenericReturn :| e,
+    NoReturnValue :| e
   ) =>
   Env ->
   Expr ->
@@ -1069,8 +1083,10 @@ inferType env = \case
         M.empty
         (zip3 [1 ..] fsArgs orderedArgs)
 
-    -- 束縛済み型変数に従って戻り値 SigTy を具体型に落とす
-    instantiateSigTy tenv subst (fromJust fsRet)
+    -- 束縛済み型変数に従って「戻り値」を具体型に落とす（未束縛ならエラー）
+    case fsRet of
+      Nothing -> VEither.fromLeft $ NoReturnValue (sourceNameOf fn) fname
+      Just rSig -> instantiateSigTyRet tenv subst fname rSig
   where
     eqLike ta tb =
       if nominalEq (envTypes env) ta tb
@@ -1261,7 +1277,9 @@ lvalueType ::
     UnknownArgName :| e,
     DuplicateArgName :| e,
     PositionalAfterNamed :| e,
-    BadArgCount :| e
+    BadArgCount :| e,
+    UnsupportedGenericReturn :| e,
+    NoReturnValue :| e
   ) =>
   Env ->
   STType ->
@@ -1335,7 +1353,9 @@ elabVar ::
     UnknownArgName :| e,
     DuplicateArgName :| e,
     PositionalAfterNamed :| e,
-    BadArgCount :| e
+    BadArgCount :| e,
+    UnsupportedGenericReturn :| e,
+    NoReturnValue :| e
   ) =>
   Env -> Variable -> VEither e Variable
 elabVar env v =
@@ -1377,7 +1397,9 @@ checkExprAssignable ::
     UnknownArgName :| e,
     DuplicateArgName :| e,
     PositionalAfterNamed :| e,
-    BadArgCount :| e
+    BadArgCount :| e,
+    UnsupportedGenericReturn :| e,
+    NoReturnValue :| e
   ) =>
   Env ->
   -- | tgt: 左辺の期待型（宣言型）
@@ -1435,7 +1457,9 @@ checkArrayAggInit ::
     UnknownArgName :| e,
     DuplicateArgName :| e,
     PositionalAfterNamed :| e,
-    BadArgCount :| e
+    BadArgCount :| e,
+    UnsupportedGenericReturn :| e,
+    NoReturnValue :| e
   ) =>
   Env ->
   Identifier -> -- 変数名（診断用）
@@ -1490,7 +1514,9 @@ checkStructAggInit ::
     UnknownArgName :| e,
     DuplicateArgName :| e,
     PositionalAfterNamed :| e,
-    BadArgCount :| e
+    BadArgCount :| e,
+    UnsupportedGenericReturn :| e,
+    NoReturnValue :| e
   ) =>
   Env ->
   Identifier ->
@@ -1585,7 +1611,9 @@ checkStmt ::
     UnknownArgName :| e,
     DuplicateArgName :| e,
     PositionalAfterNamed :| e,
-    BadArgCount :| e
+    BadArgCount :| e,
+    UnsupportedGenericReturn :| e,
+    NoReturnValue :| e
   ) =>
   Env ->
   Statement ->
@@ -2014,7 +2042,20 @@ instantiateSigTy _tenv subst (SigGen gst tv) =
       GSTAnyDate -> DATE
       GSTAnyDuration -> TIME
 
+-- 戻り値位置専用：未束縛TVなら UnsupportedGenericReturn を投げる
+instantiateSigTyRet ::
+  (UnsupportedGenericReturn :| e) =>
+  TypeEnv -> TVSubst -> FunctionName -> SigTy -> VEither e STType
+instantiateSigTyRet _ _ _ (SigMono t) = pure t
+instantiateSigTyRet _ subst fname (SigGen _gst tv) =
+  case M.lookup tv subst of
+    Just t -> pure t
+    Nothing -> VEither.fromLeft (UnsupportedGenericReturn fname)
+
 noSpan :: Span
 noSpan = Span dummyPos dummyPos
   where
     dummyPos = initialPos "<no-span>"
+
+sourceNameOf :: Identifier -> FilePath
+sourceNameOf ident = sourceName $ spanStart $ locSpan ident

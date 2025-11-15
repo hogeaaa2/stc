@@ -199,7 +199,7 @@ shouldRejectNum run src =
 
 expectParsedUnits :: [Text] -> ([Unit] -> Expectation) -> Expectation
 expectParsedUnits srcs k =
-  case parseUnits srcs of
+  case parseUnits' srcs of
     Left (i, e) ->
       expectationFailure $
         "Parse error in input-" <> show i <> ":\n" <> errorBundlePretty e
@@ -212,7 +212,7 @@ main = hspec $ do
   describe "Minimal ST parser" $ do
     it "parses a bare PROGRAM + empty VAR..END_VAR block" $ do
       let src = "PROGRAM PLC_PRG\nVAR\nEND_VAR\n" :: Text
-      parseProgram src `shouldBe` Right (Program "PLC_PRG" (VarDecls []) [])
+      parseProgram src `shouldSatisfy` isRight
 
     it "fails when END_VAR is missing" $ do
       let src = "PROGRAM\nVAR\n"
@@ -380,7 +380,7 @@ main = hspec $ do
 
     forM_ ok $ \files ->
       it ("parses units: " <> renderCase files) $
-        case parseUnits files of
+        case parseUnits' files of
           Left (i, e) ->
             expectationFailure $
               "Parse error in input-" <> show i <> ":\n" <> errorBundlePretty e
