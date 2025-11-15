@@ -293,14 +293,6 @@ elabTypeDecl ::
 elabTypeDecl tenv0 (TypeDecl n t) =
   TypeDecl n <$> resolveType tenv0 t
 
--- replaceTypes :: [Unit] -> [TypeDecl] -> [Unit]
--- replaceTypes [] _ = []
--- replaceTypes (UType oldTds : xs) tds =
---   let (here, rest) = splitAt (length oldTds) tds
---    in UType here : replaceTypes xs rest
--- replaceTypes (x : xs) tds =
---   x : replaceTypes xs tds
-
 -- 解決済み TypeEnv を使って、UType の中身だけを差し替える（名前照合）
 rewriteUnitTypes :: TypeEnv -> Unit -> Unit
 rewriteUnitTypes tenv = \case
@@ -328,12 +320,9 @@ elaborateProgram ::
   TypeEnv -> FuncEnv -> Program -> VEither AllErrs Program
 elaborateProgram tenv fenv (Program n vds body) = do
   -- 型解決済み VarDecls
-  -- trace "1: resolveVarTypes" $ pure ()
-  vds'@(VarDecls vs) <- resolveVarTypes tenv vds
-
+  VarDecls vs <- resolveVarTypes tenv vds
   -- VarEnv 構築（重複チェック込み）
-  -- trace "2: build VarEnv" $ pure ()
-  venv <- foldM (insertVar $ locVal n) M.empty vs
+  venv <- foldM insertVar M.empty vs
 
   let env =
         Env
@@ -343,19 +332,16 @@ elaborateProgram tenv fenv (Program n vds body) = do
           }
 
   -- 初期化子チェック＆デフォルト付与
-  -- trace "3: elabVar" $ pure ()
   vs'' <- traverse (elabVar env) vs
 
   -- ステートメント検査
-  -- trace "4: checkStmt" $ pure ()
   mapM_ (checkStmt env) body
-  -- trace "5: done" $ pure ()
   pure (Program n (VarDecls vs'') body)
 
 insertVar ::
   (DuplicateVar :| e) =>
-  Text -> VarEnv -> Variable -> VEither e VarEnv
-insertVar progName m v = do
+  VarEnv -> Variable -> VEither e VarEnv
+insertVar m v = do
   let vname = locVal (varName v)
       sp = locSpan (varName v)
   case M.lookup vname m of
@@ -374,11 +360,6 @@ insertVar progName m v = do
               viRetain = varRetain v
             }
           m
-
-sigTyToSTType :: SigTy -> Maybe STType
-sigTyToSTType = \case
-  SigMono t -> Just t
-  _ -> Nothing
 
 elaborateFunction ::
   ( UnsupportedGenericReturn :| e,
@@ -416,36 +397,17 @@ elaborateFunction tenv fenv fn = do
   let fname = locVal $ funcName fn
       fvds = funcVarDecls fn
       fbody = fBody fn
-  -- -- 1. 自分のシグネチャ取得
-  -- sig <- case M.lookup fname fenv of
-  --   Nothing -> VEither.fromLeft $ InternalError $ "FuncSig not found for FUNCTION " <> fname
-  --   Just sig -> pure sig
-
-  -- -- 2. 戻り値型の確認
-  -- retTyST <- case fsRet sig of
-  --   Just sigTy ->
-  --     case sigTyToSTType sigTy of
-  --       Just t -> pure t
-  --       Nothing -> VEither.fromLeft $ UnsupportedGenericReturn fname
-  --   -- ここで「ANY返り値のユーザー定義FUNCTIONはまだ対応してないです」と落とす
-  --   Nothing ->
-  --     VEither.fromLeft $ InternalError $ "FUNCTION " <> fname <> " has no return type in FuncSig"
-
-  -- 必要なら funcRetType を resolve して retTySig と一致するか確認
-  -- （ここでは B 側で作ったので一致してる前提でもOK）
-  -- let retTyDeclared = resolveType tenv funcRetType
-  -- when (retTyDeclared /= retTySig) (Left (MismatchedFuncRetType ...))
 
   -- 自分の宣言を解決するだけ
   retTyST <- resolveType tenv (funcRetType fn)
-  -- 3. 変数宣言の型解決
+  -- 変数宣言の型解決
   vds'@(VarDecls vs) <- resolveVarTypes tenv fvds
 
-  -- 4. VarEnv 構築（DuplicateVar などは insertVar に任せる）
-  venv0 <- foldM (insertVar fname) M.empty vs
+  -- VarEnv 構築（DuplicateVar などは insertVar に任せる）
+  venv0 <- foldM insertVar M.empty vs
 
-  -- 5. 暗黙の戻り値変数（関数名と同名）を追加
-  --    既にユーザーが同名を宣言してたらエラーにしてよい（仕様次第）
+  -- 暗黙の戻り値変数（関数名と同名）を追加
+  -- 既にユーザーが同名を宣言してたらエラーにしてよい（仕様次第）
   let retVarInfo =
         VarInfo
           { viType = retTyST,
@@ -460,7 +422,7 @@ elaborateFunction tenv fenv fn = do
       Just _ -> VEither.fromLeft (DuplicateVar fname (viSpan retVarInfo))
       Nothing -> pure (M.insert fname retVarInfo venv0)
 
-  -- 6. この FUNCTION 用 Env
+  -- この FUNCTION 用 Env
   let env =
         Env
           { envTypes = tenv,
@@ -468,15 +430,15 @@ elaborateFunction tenv fenv fn = do
             envFuncs = fenv
           }
 
-  -- 7. 本体のステートメントを検査
+  -- 本体のステートメントを検査
   mapM_ (checkStmt env) fbody
 
-  -- 8. 戻り値が一度も代入されていない場合はエラー（ざっくりバージョン）
+  -- 戻り値が一度も代入されていない場合はエラー（ざっくりバージョン）
   unless (hasReturnAssign fname fbody) $
     VEither.fromLeft $
       MissingReturn fname
 
-  -- 9. resolve 済み VarDecls を差し込んだ Function を返す
+  -- resolve 済み VarDecls を差し込んだ Function を返す
   pure fn {funcVarDecls = vds'}
 
 hasReturnAssign :: Text -> [Statement] -> Bool
@@ -513,14 +475,6 @@ lvalueWritesTo fname = \case
   LIndex lv _ -> lvalueWritesTo fname lv
   LField lv _ -> lvalueWritesTo fname lv
 
--- 必要なら他のコンストラクタもここで fname まで潜る
-
--- Unit 内の TYPE から TypeEnv を作る（解決込み）
-typeEnvFromUnit ::
-  (TypeCycle :| e, UnknownType :| e) =>
-  Unit -> VEither e TypeEnv
-typeEnvFromUnit u = typeEnvFromUnits [u]
-
 -- 複数 Unit の全 TYPE を一括解決して最終 TypeEnv を返す
 typeEnvFromUnits ::
   (TypeCycle :| e, UnknownType :| e) =>
@@ -549,18 +503,6 @@ funcEnvFromUnits ::
   ) =>
   TypeEnv -> FuncEnv -> Units -> VEither e FuncEnv
 funcEnvFromUnits tenv = foldM (funcEnvFromUnit tenv)
-
-addItem ::
-  forall e.
-  ( TypeCycle :| e,
-    UnknownType :| e,
-    DuplicateFunction :| e
-  ) =>
-  TypeEnv -> FuncEnv -> Unit -> VEither e FuncEnv
-addItem tenv env = \case
-  UFunction f -> addFunction tenv env f
-  UFunctionBlock fb -> addFunctionBlock tenv env fb
-  _ -> pure env
 
 insertFuncSig ::
   (DuplicateFunction :| e) =>
@@ -704,15 +646,8 @@ callArgSpan = \case
   CallArgPos e -> spanOfExpr e
   CallArgNamed i _ -> locSpan i
 
--- lookupByName :: Text -> [(Identifier, STType)] -> Maybe STType
--- lookupByName n = fmap snd . find (\(i, _) -> locVal i == n)
-
 typeEnvOf :: [TypeDecl] -> M.Map Text STType
 typeEnvOf = M.fromList . map (\(TypeDecl n t) -> (locVal n, t))
-
--- =========================
--- 整数/ビット列の範囲情報
--- =========================
 
 intBounds :: STType -> Maybe (Integer, Integer)
 intBounds = \case
@@ -1575,15 +1510,6 @@ checkStructAggInit env varId tgtTy pairs = do
     other ->
       VEither.fromLeft $ NotAStruct (locSpan varId) other
 
--- where
---   dupKey :: [Text] -> Maybe Text
---   dupKey = go Set.empty
---     where
---       go _ [] = Nothing
---       go s (k : ks)
---         | k `Set.member` s = Just k
---         | otherwise = go (Set.insert k s) ks
-
 -- 本体の文チェック
 checkStmt ::
   forall e.
@@ -1711,7 +1637,6 @@ checkStmt env = \case
     -- ★ INT スクルーティニのときだけ、向き&重複/交差チェック（リテラル評価できるもののみ）
     case tScrut of
       INT -> do
-        -- let selIntervals :: CaseSelector -> Either [e] (Maybe (Int, Int))
         let selIntervals = \case
               CSExpr e ->
                 case evalIntLiteral e of
@@ -1737,31 +1662,8 @@ checkStmt env = \case
         when (hasOverlap (sortOn fst allIvs)) $
           VEither.fromLeft OverlappingCase
       _ -> pure () -- ENUM 等はここでは追加チェックなし
-      -- mapM_ (\(CaseArm sels ss) -> mapM_ checkSel sels >> mapM_ (checkStmt tenv env) ss) arms
-      -- mapM_ (checkStmt tenv env) els
     forM_ arms $ \(CaseArm _ ss) -> checkArmBody ss
     mapM_ (checkStmt env) els
-    where
-
-  -- -- ラベル種別に応じて「期待/実際」の型を作るためのヘルパ
-  -- actualInt = INT
-  -- actualEnum = Named
-
-  -- 列挙型スクルーティニでは、同じ列挙型名の列挙子のみ許可
-  -- ensureEnumSelectors :: STType -> Identifier -> CaseArm -> Either [SemantDiag] ()
-  -- ensureEnumSelectors t expectedTy (CaseArm sels _) =
-  --   mapM_ checkOne sels
-  --   where
-  --     checkOne = \case
-  --       -- 整数値/範囲は NG
-  --       CSValue _ -> Left [OpTypeMismatch {op = "CASE", expected = t, actual = actualInt}]
-  --       CSRange _ _ -> Left [OpTypeMismatch {op = "CASE", expected = t, actual = actualInt}]
-  --       -- 列挙子は、型名が一致する場合のみ OK
-  --       CSEnum ty _ ->
-  --         if locVal ty == locVal expectedTy
-  --           then VRight ()
-  --           else
-  --             Left [OpTypeMismatch {op = "CASE", expected = t, actual = actualEnum ty}]
   For iv e0 e1 mby body -> do
     -- ループ変数の存在／const でない／型が INT
     let nameTxt = locVal iv
@@ -1810,14 +1712,6 @@ checkStmt env = \case
         -- 同じ名前でも“別のループ”という概念は仕様上ないので禁止継続でOK
         mapM_ (denyAssignTo nm) ss
       Skip -> VRight ()
-
--- where
--- もし範囲チェックをしたければ:
--- checkArm (CaseArm sels _) =
---   forM_ sels $ \case
---     CSRange a b | a > b ->
---       Left [InvalidCaseRange a b]   -- Diag を足す
---     _ -> VRight ()
 
 -- =========================================================
 --  Constant *Designator* checker (CODESYS 風, CASE セレクタ用)
