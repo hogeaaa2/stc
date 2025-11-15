@@ -1,70 +1,98 @@
-# Next（着手候補 1〜3 件／1 行要約）
+いい感じに積み上がってきたので、現状まとめ＋この先の道筋をコンパクトに整理するね。
 
-- [IN-PROGRESS] A: FUNCTION/FB の AST & Parser → tests: `test/Spec.hs` “parses FUNCTION … / FUNCTION_BLOCK …, rejects …” | run: `stack test :p --test-arguments "-m \"FUNCTION\|FUNCTION_BLOCK\""`
-- [PENDING] B: POU シグネチャを FuncEnv へ反映 → tests: `test/SemanticSpec.hs` “accepts function call … / rejects bad args …” | run: `stack test :s --test-arguments "-m \"function call\""`
-- [PENDING] C: ユーザー定義 FUNCTION 本体の型チェック → tests: `test/SemanticSpec.hs` “parses/accepts FUNCTION body … / rejects missing return …” | run: `stack test :s --test-arguments "-m \"FUNCTION body\""`
+# いま出来ていること（要点）
 
-（着手時は [IN-PROGRESS]、完了時は [DONE] へ更新）
+* #AST / Parser
 
----
+  * `Unit` は和型（`UType | UProgram | UFunction | UFunctionBlock`）。
+  * **複数ファイル**対応：`parseUnit :: FilePath -> Text -> Unit`、`parseUnits :: [(FilePath,Text)] -> [Unit]`。
+  * テスト用ヘルパ整備：`expectParsedUnits` などで “TYPEとPROGRAMは別ファイル” 前提に統一。
 
-# Backlog（要約）
+* #TypeEnv / FuncEnv 構築
 
-## (A) POU サポート: FUNCTION / FUNCTION_BLOCK の構文・AST
+  * `typeEnvFromUnits`：全 TYPE を一括解決。
+  * `funcEnvFromUnit(s)`：FUNCTION/FB から `FuncEnv` 構築。
 
-- 追加: `Unit` に `[FunctionDecl]`, `[FunctionBlockDecl]`
-- FunctionDecl: 名前、戻り値型、`VAR_INPUT` / `VAR_OUTPUT` / `VAR`、本体文
-- FunctionBlockDecl: 名前、各 VAR セクション（インスタンスメンバ）、本体
-- Parser: `FUNCTION … END_FUNCTION`、`FUNCTION_BLOCK … END_FUNCTION_BLOCK`、まずは `VAR`/`VAR_INPUT` に限定
+    * **相互再帰バグ**（`funcEnvFromUnit`→`funcEnvFromUnits`→…）を解消。
+    * `DuplicateFunction` を **位置情報つき**で検出（テストも Pass）。
 
-## (B) POU のシグネチャを関数環境へ
+* #Semantics（式・文の検査）
 
-- elaboration で TYPE 群から `TypeEnv`、FUNCTION 群から `FuncEnv :: Map Text FuncSig`
-- パラメータ型は `STType`（単相）と `GST`（ANY_*）の両方に対応
-- FUNCTION_BLOCK は将来の FB 呼び出しに備えたインタフェース環境へ
+  * `elaborateUnits`：`tenv` / `fenv` を作って各 `Unit` を検査するプロジェクト入口。
+  * 既定初期化：`INT/BOOL` や Enum の **先頭列挙子**など（該当テスト Pass）。
+  * 代入・式の型推論（`inferType`）
 
-## (C) FUNCTION 本体の意味解析
+    * **ANY-family**の単一化：`assignArgs` → 引数型推論 → `subst` 構築（`gstMember`/`nominalEq`）。
+    * **戻り値の具体化は厳格**に：`instantiateSigTyRet`（未束縛なら `UnsupportedGenericReturn`）。
+    * **戻り値なし**を式で使ったら `NoReturnValue`（テスト Pass）。
+  * 関数本体検査（`elaborateFunction`）
 
-- `VAR_INPUT`/`VAR` を VarEnv に投入し `checkStmt`
-- 戻り値の扱い（関数名への代入=戻り値 など）を規約化
+    * 返り型の解決は **自分の宣言を resolve**。
+      （“戻り ANY_* 禁止”は**呼び出し側**で扱う方針に整理済み）
 
-## (D) VAR_INPUT / OUTPUT / IN_OUT の意味論
+* #テスト整備
 
-- `VAR_INPUT`: 呼び出しは式（値渡し）、本体では readonly（代入禁止）
-- `VAR_OUTPUT`: 呼び出しは変数（lvalue）を渡す、本体では書込必須（警告/エラー方針は別途）
-- `VAR_IN_OUT`: 参照渡し（lvalue 必須）、本体から読み書き可
-- まずは INPUT readonly から着手、その後 OUTPUT/IN_OUT と call-site 検査（`ECall` 引数が LValue か等）
-
-## (E) ANY / ANY_* を POU 定義でも許可（本命）
-
-- ParamTy を単相/ジェネリックで表現（例: `PTMono STType` / `PTGen GST Tag`）
-- `VAR_INPUT` で `ANY_INT` などをパース
-- 既存の ECall のジェネリック束縛ロジックをユーザー定義 FUNCTION にも適用
-
-## (F) 定数式評価 (evalConstExpr) の本格導入
-
-- `ConstVal` ベースの `evalConstExpr` を仕上げて以下に適用:
-  - `VAR CONSTANT` 初期値
-  - CASE ラベル
-  - 静的添字
-  - 範囲リテラル 等
-
-## (G) FB / PROGRAM 呼び出し（Statement call）と FB インスタンス
-
-- `myFb();` 形式の呼び出しを `Statement` として扱う
-- `myFb: MyFB;` を状態を持つ構造 + 実行ステップとして扱う
-- 重めのため (A)(F) 後で着手
+  * 既存の単一文字列テストを **複数ファイル**化して順次修正・緑。
+  * `DuplicateFunction` / `UnsupportedGenericReturn` / `NoReturnValue` などの新規系も緑。
 
 ---
 
-# Notes
+# この先やること（推奨順）
 
-- ANY 系（`ANY`, `ANY_INT`, …）は原則 FUNCTION / FUNCTION_BLOCK の `VAR_INPUT` 用の型クラス的な位置づけ。実体変数の型ではない。
-- したがって ANY 対応は POU（FUNCTION/FB）のパース・AST が揃ってから適用するのが自然。
+1. **FUNCTION 本体の完了判定を堅くする**（MissingReturn 系）
 
-# TDD フロー（合意）
+   * いまの `hasReturnAssign` を Statement 仕様（`Assign/If/While/Repeat/Case/For/Skip`）で**全到達パス**判定に仕上げる。
+   * テスト：
 
-- まず該当 `test/*.hs` の末尾に `it` を追加（成功系: `parses …` / 失敗系: `rejects …`）。
-- `stack test :p|:s --test-arguments "-m \"<pattern>\""` で Red を確認。
-- 実装 → Green → ここ（zzz.md）の Next/Backlog を更新。
+     * 正常系：全パスで `F := ...` 済み。
+     * 異常系：どこかの分岐で未代入 → `MissingReturn`。
 
+2. **パラメータ方向（VAR_INPUT/OUTPUT/IN_OUT）ルール**
+
+   * Parser は OK なので Semantics で適用：
+
+     * `INPUT` は**読み取り専用**（LHS 代入禁止）。
+     * `OUTPUT` は**少なくとも一度は代入**（未代入なら警告/エラーの方針を決める）。
+     * `IN_OUT` は**参照渡し**的：実引数は LValue 必須・式不可。
+   * VarEnv へ投入時に `VarKind` を保持（`VarInfo.viKind` 既存）。
+   * テスト：INPUT書き換えNG、IN_OUTにリテラル渡しNG、OUTPUT未代入NG。
+
+3. **ANY-family の網羅性拡張**
+
+   * `gstMember` を `ANY_BIT/ANY_STRING/ANY_DATE/ANY_DURATION` まで拡充。
+   * 代表値（デフォルト）と等価判定の整理（`nominalEq` で十分か確認）。
+   * テスト：受理/拒否の組合せを追加。
+
+4. **呼び出し引数の“名前付き＋位置”ミックスの完成度**
+
+   * 既に `assignArgs` あり。
+
+     * 二重指定・未指定・順序違反などのエラーを詰めてテスト追加。
+
+5. **エラーメッセージの表現統一**
+
+   * すべて `Span` 付与済みか確認（`UnknownFunction`/`ArgTypeMismatch`/…）。
+   * `ArgTypeMismatch` の expected に家族代表（`repForGST`）を使う等、読みやすさ改善。
+
+6. **（先取りの安全策）FBを式に使った誤用の専用エラー**
+
+   * いまは `UnknownFunction`→`NoReturnValue` になりがち。
+     VarEnv に FB インスタンスが見つかったら `FBUsedAsExpr` を返すプリチェックを `inferType ECall` 頭に入れておく。
+
+7. **（中期）FB 本体/実行モデル**
+
+   * 文としての呼び出しノード（例：`FBInvoke`）の追加、入出力の意味論（後ろ倒しでOK）。
+
+---
+
+# 小さな運用Tips
+
+* **単体Unit検査**は `elaborateUnitWithDecls`（UProgram短絡）を “自己完結テスト”に限定。
+  ファイル跨ぎ（TYPE/PROGRAM別）は**必ず** `elaborateUnits` を使う。
+* `funcEnvFromUnit` は**絶対に** `elaborate*` を呼ばない（再発防止）。
+* `shouldSatisfy` で落ちるときは `force`＋`case`＋`shouldBe` に寄せるとデバッグが楽。
+
+---
+
+この順でいけば、A（Parser/AST）は完了、B（シグネチャ反映＆呼び出し検査の土台）は**ほぼ完了**、C（FUNCTION本体の型検査）は**未決の“全パス代入”と param dir ルール**を押さえればゴール、って感じ。
+次は 1) と 2) を片付けよう。テスト雛形が要ればすぐ出すよ。

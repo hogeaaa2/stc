@@ -6,16 +6,17 @@
 {-# LANGUAGE TupleSections #-}
 
 module ST.Semantic
-  ( elaborateUnit,
-    elaborateUnits,
+  ( elaborateUnits,
     elaborateUnitWithDecls,
     elaborateUnitsWithDecls,
+    elaborateUnitsWithMode,
     nominalEq,
     FuncEnv,
     FuncSig (..),
     SigTy (..),
     TVarId (..),
     FuncKind (..),
+    SemMode (..),
     AllErrs,
     DuplicateVar (..),
     UnknownVar (..),
@@ -57,6 +58,7 @@ import Control.Monad (foldM, forM, forM_, guard, unless, when)
 import Data.List (sortOn)
 import Data.Map.Strict qualified as M
 import Data.Maybe (catMaybes, fromMaybe)
+import Data.Set (Set)
 import Data.Set qualified as Set
 import Data.Text (Text)
 import Data.Text qualified as T
@@ -74,13 +76,20 @@ type FuncEnv = M.Map Text FuncSig
 
 type TVSubst = M.Map TVarId STType
 
+-- CodesysLike:
+-- Functionで「到達可能な戻り値代入」が必須ではない（IR木生成側で初期値代入してカバー）
+-- Strict:
+-- Functionで「到達可能な戻り値代入」が必須
+data SemMode = CodesysLike | Strict
+
 newtype TVarId = TV Int
   deriving (Eq, Ord, Show)
 
 data Env = Env
   { envTypes :: TypeEnv,
     envVars :: VarEnv,
-    envFuncs :: FuncEnv
+    envFuncs :: FuncEnv,
+    envMode :: SemMode
   }
 
 -- | 引数の方向
@@ -254,11 +263,18 @@ elaborateUnits ::
 elaborateUnits baseFenv us = do
   tenv <- typeEnvFromUnits us -- 全 TYPE 解決
   fenv <- funcEnvFromUnits tenv baseFenv us -- 全 FUNCTION/FB を登録
-  traverse (elaborateUnit tenv fenv) us
+  traverse (elaborateUnit CodesysLike tenv fenv) us
 
 elaborateUnitsWithDecls ::
   TypeEnv -> FuncEnv -> Units -> VEither AllErrs Units
-elaborateUnitsWithDecls tenv fenv = traverse (elaborateUnit tenv fenv)
+elaborateUnitsWithDecls tenv fenv = traverse (elaborateUnit CodesysLike tenv fenv)
+
+elaborateUnitsWithMode ::
+  SemMode -> FuncEnv -> Units -> VEither AllErrs Units
+elaborateUnitsWithMode mode baseFenv us = do
+  tenv <- typeEnvFromUnits us
+  fenv <- funcEnvFromUnits tenv baseFenv us
+  traverse (elaborateUnit mode tenv fenv) us
 
 -- - TYPE を解決して tenv 作る
 -- - その結果を Unit に反映
@@ -282,7 +298,7 @@ elaborateUnitWithDecls baseFenv u0 = do
   -- 6. この Unit 内の FUNCTION / FB から FuncEnv を拡張
   fenv <- funcEnvFromUnit tenv baseFenv u1
   -- 7. 既存の tenv / fenv で Unit を elaborate（Program/Function 本体検査）
-  elaborateUnit tenv fenv u1
+  elaborateUnit CodesysLike tenv fenv u1
 
 -- TypeDecl の本体を resolve
 elabTypeDecl ::
@@ -293,32 +309,37 @@ elabTypeDecl ::
 elabTypeDecl tenv0 (TypeDecl n t) =
   TypeDecl n <$> resolveType tenv0 t
 
--- 解決済み TypeEnv を使って、UType の中身だけを差し替える（名前照合）
-rewriteUnitTypes :: TypeEnv -> Unit -> Unit
-rewriteUnitTypes tenv = \case
-  UType tds ->
-    UType
-      [ TypeDecl n (fromMaybe t (M.lookup (locVal n) tenv))
-      | TypeDecl n t <- tds
-      ]
-  other -> other
+-- -- 解決済み TypeEnv を使って、UType の中身だけを差し替える（名前照合）
+-- rewriteUnitTypes :: TypeEnv -> Unit -> Unit
+-- rewriteUnitTypes tenv = \case
+--   UType tds ->
+--     UType
+--       [ TypeDecl n (fromMaybe t (M.lookup (locVal n) tenv))
+--       | TypeDecl n t <- tds
+--       ]
+--   other -> other
 
--- 複数ファイル（[Unit]）なら map するだけ
-rewriteUnitsTypes :: TypeEnv -> [Unit] -> [Unit]
-rewriteUnitsTypes tenv = map (rewriteUnitTypes tenv)
+-- -- 複数ファイル（[Unit]）なら map するだけ
+-- rewriteUnitsTypes :: TypeEnv -> [Unit] -> [Unit]
+-- rewriteUnitsTypes tenv = map (rewriteUnitTypes tenv)
 
-elaborateUnit :: TypeEnv -> FuncEnv -> Unit -> VEither AllErrs Unit
-elaborateUnit tenv fenv = \case
-  UProgram p -> UProgram <$> elaborateProgram tenv fenv p
-  UFunction f -> UFunction <$> elaborateFunction tenv fenv f
-  UFunctionBlock fb -> pure (UFunctionBlock fb)
+elaborateUnit :: SemMode -> TypeEnv -> FuncEnv -> Unit -> VEither AllErrs Unit
+elaborateUnit mode tenv fenv = \case
+  UProgram p -> UProgram <$> elaborateProgram mode tenv fenv p
+  UFunction f -> UFunction <$> elaborateFunction mode tenv fenv f
+  UFunctionBlock fb -> UFunctionBlock <$> elaborateFunctionBlock mode tenv fenv fb
   -- TYPE はすでに replaceTypes 済みなのでそのまま
-  t@(UType _) -> pure t
+  UType tds -> pure (UType tds)
+
+-- TODO 実装する
+elaborateFunctionBlock ::
+  SemMode -> TypeEnv -> FuncEnv -> FunctionBlock -> VEither AllErrs FunctionBlock
+elaborateFunctionBlock = undefined
 
 -- 旧 elaborateUnit 本体を Program 単位に切り出したもの
 elaborateProgram ::
-  TypeEnv -> FuncEnv -> Program -> VEither AllErrs Program
-elaborateProgram tenv fenv (Program n vds body) = do
+  SemMode -> TypeEnv -> FuncEnv -> Program -> VEither AllErrs Program
+elaborateProgram mode tenv fenv (Program n vds body) = do
   -- 型解決済み VarDecls
   VarDecls vs <- resolveVarTypes tenv vds
   -- VarEnv 構築（重複チェック込み）
@@ -328,7 +349,8 @@ elaborateProgram tenv fenv (Program n vds body) = do
         Env
           { envTypes = tenv,
             envVars = venv,
-            envFuncs = fenv
+            envFuncs = fenv,
+            envMode = mode
           }
 
   -- 初期化子チェック＆デフォルト付与
@@ -392,8 +414,8 @@ elaborateFunction ::
     UnknownType :| e,
     NoReturnValue :| e
   ) =>
-  TypeEnv -> FuncEnv -> Function -> VEither e Function
-elaborateFunction tenv fenv fn = do
+  SemMode -> TypeEnv -> FuncEnv -> Function -> VEither e Function
+elaborateFunction mode tenv fenv fn = do
   let fname = locVal $ funcName fn
       fvds = funcVarDecls fn
       fbody = fBody fn
@@ -427,53 +449,31 @@ elaborateFunction tenv fenv fn = do
         Env
           { envTypes = tenv,
             envVars = venv1,
-            envFuncs = fenv
+            envFuncs = fenv,
+            envMode = mode
           }
 
   -- 本体のステートメントを検査
   mapM_ (checkStmt env) fbody
 
-  -- 戻り値が一度も代入されていない場合はエラー（ざっくりバージョン）
-  unless (hasReturnAssign fname fbody) $
-    VEither.fromLeft $
-      MissingReturn fname
+  case envMode env of
+    Strict -> do
+      -- 要求集合 = {関数名} ∪ {VAR_OUTPUT の変数名たち}
+      let retName = fname
+          outNames =
+            Set.fromList
+              [ locVal (varName v)
+              | let VarDecls vs' = funcVarDecls fn,
+                v <- vs',
+                varKind v == VKOutput
+              ]
+          reqNames = Set.insert retName outNames
+      unless (mustAssignAll reqNames fbody) $
+        VEither.fromLeft (MissingReturn fname)
+    CodesysLike -> pure ()
 
   -- resolve 済み VarDecls を差し込んだ Function を返す
   pure fn {funcVarDecls = vds'}
-
-hasReturnAssign :: Text -> [Statement] -> Bool
-hasReturnAssign fname = any (stmtAssignsTo fname)
-
-stmtAssignsTo :: Text -> Statement -> Bool
-stmtAssignsTo fname = \case
-  Assign lv _ -> lvalueWritesTo fname lv
-  If _ th elsifs els ->
-    any (stmtAssignsTo fname) th
-      || any (any (stmtAssignsTo fname) . snd) elsifs
-      || any (stmtAssignsTo fname) els
-  While _ body ->
-    any (stmtAssignsTo fname) body
-  Repeat body _ ->
-    any (stmtAssignsTo fname) body
-  Case _ arms els ->
-    any (caseArmAssignsTo fname) arms
-      || any (stmtAssignsTo fname) els
-  For _ _ _ _ body ->
-    any (stmtAssignsTo fname) body
-  Skip ->
-    False
-
-caseArmAssignsTo :: Text -> CaseArm -> Bool
-caseArmAssignsTo fname (CaseArm _ stmts) =
-  any (stmtAssignsTo fname) stmts
-
-lvalueWritesTo :: Text -> LValue -> Bool
-lvalueWritesTo fname = \case
-  -- 関数名そのものへの代入:
-  LVar ident -> locVal ident == fname
-  -- 配列 / フィールド / ネストしていても、最終的な「ベース変数」が関数名なら return 扱い:
-  LIndex lv _ -> lvalueWritesTo fname lv
-  LField lv _ -> lvalueWritesTo fname lv
 
 -- 複数 Unit の全 TYPE を一括解決して最終 TypeEnv を返す
 typeEnvFromUnits ::
@@ -1953,3 +1953,46 @@ noSpan = Span dummyPos dummyPos
 
 sourceNameOf :: Identifier -> FilePath
 sourceNameOf ident = sourceName $ spanStart $ locSpan ident
+
+-- LValue の“ベース変数名”を抽出
+baseVarName :: LValue -> Maybe Text
+baseVarName = \case
+  LVar ident -> Just (locVal ident)
+  LIndex lv _ -> baseVarName lv
+  LField lv _ -> baseVarName lv
+
+-- 要求された変数名集合 req が、ブロック実行後に「確実に代入済み」になるか
+mustAssignAll :: Set Text -> [Statement] -> Bool
+mustAssignAll req body =
+  let out = goBlock Set.empty body
+   in req `Set.isSubsetOf` out
+  where
+    -- ブロック：順次実行。確定代入集合を前から伝播
+    goBlock :: Set Text -> [Statement] -> Set Text
+    goBlock acc [] = acc
+    goBlock acc (s : ss) = goBlock (goStmt acc s) ss
+
+    -- 文：確定代入集合の更新
+    goStmt :: Set Text -> Statement -> Set Text
+    goStmt acc = \case
+      Assign lv _ ->
+        case baseVarName lv of
+          Just n | n `Set.member` req -> Set.insert n acc
+          _ -> acc
+      If _ th elsifs els ->
+        let b0 = goBlock acc th
+            bEls = foldr (\(_, bs) z -> Set.intersection (goBlock acc bs) z) b0 elsifs
+            bE = if null els then acc else goBlock acc els
+         in Set.intersection bEls bE -- 全分岐の共通部分だけが「確定」
+      While _ _ ->
+        acc -- 0回実行があり得る
+      Repeat body' _ ->
+        goBlock acc body' -- 1回は実行される
+      Case _ arms els ->
+        let armOuts = map (\(CaseArm _ bs) -> goBlock acc bs) arms
+            elseOut = if null els then acc else goBlock acc els
+         in foldr Set.intersection elseOut armOuts
+      For {} ->
+        acc -- 0回実行があり得る
+      Skip ->
+        acc

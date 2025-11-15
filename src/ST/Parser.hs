@@ -5,7 +5,8 @@
 {-# HLINT ignore "Use tuple-section" #-}
 
 module ST.Parser
-  ( parseProgram,
+  ( parseUnits,
+    parseProgram,
     parseUnit',
     parseUnits',
     identifier,

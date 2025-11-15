@@ -188,7 +188,9 @@ expectParsedUnits srcs k =
 expectUnitsPass :: [Text] -> Expectation
 expectUnitsPass srcs =
   case parseUnits' srcs of
-    Left e -> expectationFailure (show e)
+    Left (i, e) ->
+      expectationFailure $
+        "Parse error in input-" <> show i <> ":\n" <> errorBundlePretty e
     Right us ->
       let v :: VEither AllErrs Units
           v = elaborateUnits M.empty us
@@ -200,7 +202,9 @@ expectUnitsFail ::
   [Text] -> Expectation
 expectUnitsFail srcs =
   case parseUnits' srcs of
-    Left e -> expectationFailure (show e)
+    Left (i, e) ->
+      expectationFailure $
+        "Parse error in input-" <> show i <> ":\n" <> errorBundlePretty e
     Right us ->
       let v :: VEither AllErrs Units
           v = elaborateUnits M.empty us
@@ -230,6 +234,34 @@ expectUnitsFailWithDetail'' funs srcs pred' =
     Right us ->
       let v :: VEither AllErrs Units
           v = elaborateUnits funs us
+       in shouldFailWithDetail @err v pred'
+
+-- Pass 版（mode 指定）
+expectUnitsPassWithMode ::
+  SemMode -> FuncEnv -> [Text] -> Expectation
+expectUnitsPassWithMode mode baseFenv srcs =
+  case parseUnits' srcs of
+    Left (i, e) ->
+      expectationFailure $
+        "Parse error in input-" <> show i <> ":\n" <> errorBundlePretty e
+    Right us ->
+      case elaborateUnitsWithMode mode baseFenv us of
+        VLeft err -> expectationFailure (show err)
+        VRight _ -> pure ()
+
+-- Fail 版（mode 指定）
+expectUnitsFailWithDetailWithMode ::
+  forall err.
+  (err :| AllErrs, Typeable err) =>
+  SemMode -> FuncEnv -> [Text] -> (err -> Bool) -> Expectation
+expectUnitsFailWithDetailWithMode mode baseFenv srcs pred' =
+  case parseUnits' srcs of
+    Left (i, e) ->
+      expectationFailure $
+        "Parse error in input-" <> show i <> ":\n" <> errorBundlePretty e
+    Right us ->
+      let v :: VEither AllErrs Units
+          v = elaborateUnitsWithMode mode baseFenv us
        in shouldFailWithDetail @err v pred'
 
 main :: IO ()
@@ -1837,11 +1869,12 @@ main = hspec $ do
         \(DuplicateFunction n) -> n == "F"
 
   describe "FUNCTION body" $ do
-    it "fails with MissingReturn when no assignment to function name" $ do
+    it "fails with MissingReturn when no assignment to function name (if Strict)" $ do
       let src =
-            "FUNCTION F : INT\n\
-            \VAR_INPUT x : INT; END_VAR\n"
-      expectUnitFailWithDetail @MissingReturn src $
+            [ "FUNCTION F : INT\n\
+              \VAR_INPUT x : INT; END_VAR\n"
+            ]
+      expectUnitsFailWithDetailWithMode @MissingReturn Strict M.empty src $
         \(MissingReturn n) -> n == "F"
 
     let funsAnyRet =
@@ -1889,3 +1922,95 @@ main = hspec $ do
       expectUnitsFailWithDetail'' @NoReturnValue funsNoRet srcs $
         \case
           NoReturnValue _ name -> name == "PROC"
+
+  describe "FUNCTION must-assign (mode)" $ do
+    let prog =
+          "PROGRAM P\nVAR x: INT; END_VAR\nx := F();\n"
+
+    it "Strict: missing return fails" $ do
+      let fun =
+            "FUNCTION F : INT\n\
+            \VAR a: INT; END_VAR\n\
+            \IF FALSE THEN F := 1; END_IF\n"
+      expectUnitsFailWithDetailWithMode @MissingReturn
+        Strict
+        M.empty
+        [fun, prog]
+        (\(MissingReturn n) -> n == "F")
+
+    it "CodesysLike: missing return passes" $ do
+      let fun =
+            "FUNCTION F : INT\n\
+            \VAR a: INT; END_VAR\n\
+            \IF FALSE THEN F := 1; END_IF\n"
+      expectUnitsPassWithMode CodesysLike M.empty [fun, prog]
+
+  describe "FUNCTION must-assign per statement (Strict vs CodesysLike)" $ do
+    let callProg =
+          "PROGRAM P\nVAR x: INT; END_VAR\nx := F();\n"
+
+    -- 1) WHILE：本体で代入しても 0 回実行の可能性 → Strict では NG
+    it "WHILE-only assignment: Strict fails, CodesysLike passes" $ do
+      let fun =
+            "FUNCTION F : INT\n\
+            \VAR END_VAR\
+            \WHILE FALSE DO F := 1; END_WHILE\n"
+      expectUnitsFailWithDetailWithMode @MissingReturn
+        Strict
+        M.empty
+        [fun, callProg]
+        (\(MissingReturn n) -> n == "F")
+      expectUnitsPassWithMode CodesysLike M.empty [fun, callProg]
+
+    -- 2) REPEAT：少なくとも 1 回は実行されるが、ここでは代入しない → Strict では NG
+    --    （※REPEAT 内で IF FALSE THEN F:=1; END_IF にしても同様に NG）
+    it "REPEAT without assignment: Strict fails, CodesysLike passes" $ do
+      let fun =
+            "FUNCTION F : INT\n\
+            \VAR END_VAR\
+            \REPEAT UNTIL TRUE END_REPEAT\n"
+      expectUnitsFailWithDetailWithMode @MissingReturn
+        Strict
+        M.empty
+        [fun, callProg]
+        (\(MissingReturn n) -> n == "F")
+      expectUnitsPassWithMode CodesysLike M.empty [fun, callProg]
+
+    -- 3) CASE：アームに代入があっても、ELSE が無ければ網羅保証できない簡易実装 → Strict では NG
+    it "CASE without ELSE (assignment in one arm): Strict fails, CodesysLike passes" $ do
+      let fun =
+            "FUNCTION F : INT\n\
+            \VAR END_VAR\
+            \CASE 0 OF 1: F := 1; END_CASE\n"
+      expectUnitsFailWithDetailWithMode @MissingReturn
+        Strict
+        M.empty
+        [fun, callProg]
+        (\(MissingReturn n) -> n == "F")
+      expectUnitsPassWithMode CodesysLike M.empty [fun, callProg]
+
+    -- 4) FOR：本体で代入しても 0 回実行の可能性があるとみなす保守的解析 → Strict では NG
+    it "FOR-only assignment: Strict fails, CodesysLike passes" $ do
+      let fun =
+            "FUNCTION F : INT\n\
+            \VAR i:INT; END_VAR\
+            \FOR i := 1 TO 10 DO F := 1; END_FOR\n"
+      expectUnitsFailWithDetailWithMode @MissingReturn
+        Strict
+        M.empty
+        [fun, callProg]
+        (\(MissingReturn n) -> n == "F")
+      expectUnitsPassWithMode CodesysLike M.empty [fun, callProg]
+
+    -- 5) Skip（空文）：当然代入なし → Strict では NG
+    it "Skip only: Strict fails, CodesysLike passes" $ do
+      let fun =
+            "FUNCTION F : INT\n\
+            \VAR END_VAR\
+            \;\n"
+      expectUnitsFailWithDetailWithMode @MissingReturn
+        Strict
+        M.empty
+        [fun, callProg]
+        (\(MissingReturn n) -> n == "F")
+      expectUnitsPassWithMode CodesysLike M.empty [fun, callProg]
