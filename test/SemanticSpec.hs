@@ -2014,3 +2014,33 @@ main = hspec $ do
         [fun, callProg]
         (\(MissingReturn n) -> n == "F")
       expectUnitsPassWithMode CodesysLike M.empty [fun, callProg]
+
+  describe "FUNCTION outputs must-assign (Strict vs CodesysLike)" $ do
+    let callProg =
+          "PROGRAM P\nVAR x: INT; END_VAR\nx := F();\n"
+
+    -- ケースA: Fは代入するが、o1/o2 を一切代入しない
+    it "Strict fails when any VAR_OUTPUT is never assigned (even if return is assigned)" $ do
+      let fun =
+            "FUNCTION F : INT\n\
+            \VAR_OUTPUT o1 : INT; o2 : INT; END_VAR\n\
+            \F := 1;\n"
+      expectUnitsFailWithDetailWithMode @MissingReturn
+        Strict
+        M.empty
+        [fun, callProg]
+        (\(MissingReturn n) -> n == "F")
+      expectUnitsPassWithMode CodesysLike M.empty [fun, callProg]
+
+    -- ケースB: 片方(o1)だけに代入、もう片方(o2)は未代入
+    it "Strict fails when some VAR_OUTPUT is not assigned on all paths" $ do
+      let fun =
+            "FUNCTION F : INT\n\
+            \VAR_OUTPUT o1 : INT; o2 : INT; END_VAR\n\
+            \o1 := 2; F := 1;\n"
+      expectUnitsFailWithDetailWithMode @MissingReturn
+        Strict
+        M.empty
+        [fun, callProg]
+        (\(MissingReturn n) -> n == "F")
+      expectUnitsPassWithMode CodesysLike M.empty [fun, callProg]

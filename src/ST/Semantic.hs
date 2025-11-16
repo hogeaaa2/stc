@@ -569,8 +569,8 @@ collectPOUParams tenv (VarDecls vs) =
   fmap catMaybes . forM vs $ \v ->
     case varKind v of
       VKInput -> Just <$> mk ParamIn v
-      VKOutput -> Just <$> mk ParamOut v
       VKInOut -> Just <$> mk ParamInOut v
+      -- VKOutputは文法上、関数の入力引数とは別なのでここでは扱わない
       _ -> pure Nothing
   where
     mk :: ParamDirKind -> Variable -> VEither e ParamSig

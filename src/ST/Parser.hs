@@ -155,7 +155,9 @@ pVarDecls :: Parser VarDecls
 pVarDecls = lexeme $ do
   kind <-
     choice
-      [ VKInput <$ try (symbol "VAR_INPUT"),
+      [ VKInOut <$ try (symbol "VAR_IN_OUT"),
+        VKInput <$ try (symbol "VAR_INPUT"),
+        VKOutput <$ try (symbol "VAR_OUTPUT"),
         VKLocal <$ symbol "VAR"
       ]
   isConst <- isJust <$> optional (symbol "CONSTANT")
