@@ -39,7 +39,7 @@
 
 # この先やること（推奨順）
 
-1. **FUNCTION 本体の完了判定を堅くする**（MissingReturn 系）
+1. ✅ **FUNCTION 本体の完了判定を堅くする**（MissingReturn 系）
 
    * いまの `hasReturnAssign` を Statement 仕様（`Assign/If/While/Repeat/Case/For/Skip`）で**全到達パス**判定に仕上げる。
    * テスト：
