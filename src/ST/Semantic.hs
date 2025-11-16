@@ -51,6 +51,8 @@ module ST.Semantic
     MissingReturn (..),
     UnsupportedGenericReturn (..),
     NoReturnValue (..),
+    AssignToInput (..),
+    InOutArgNotLValue (..),
   )
 where
 
@@ -222,6 +224,10 @@ newtype UnsupportedGenericReturn = UnsupportedGenericReturn FunctionName derivin
 
 data NoReturnValue = NoReturnValue FilePath FunctionName deriving (Eq, Show)
 
+data AssignToInput = AssignToInput FilePath VariableName deriving (Eq, Show)
+
+data InOutArgNotLValue = InOutArgNotLValue FilePath VariableName deriving (Eq, Show)
+
 type AllErrs =
   [ AssignToConst,
     AssignToLoopVar,
@@ -255,7 +261,9 @@ type AllErrs =
     InternalError,
     MissingReturn,
     UnsupportedGenericReturn,
-    NoReturnValue
+    NoReturnValue,
+    AssignToInput,
+    InOutArgNotLValue
   ]
 
 elaborateUnits ::

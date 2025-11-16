@@ -2044,3 +2044,41 @@ main = hspec $ do
         [fun, callProg]
         (\(MissingReturn n) -> n == "F")
       expectUnitsPassWithMode CodesysLike M.empty [fun, callProg]
+
+  describe "FUNCTION VAR_INPUT / VAR_IN_OUT Semantics (Strict vs CodesysLike)" $ do
+    it "VAR_INPUT write: Strict fails, CodesysLike passes" $ do
+      let fun =
+            "FUNCTION F : INT\n\
+            \VAR_INPUT a : INT; END_VAR\n\
+            \a := 1; F := a;\n"
+          prog =
+            "PROGRAM P\nVAR x: INT; END_VAR\nx := F(0);\n"
+      expectUnitsFailWithDetailWithMode @AssignToInput
+        Strict
+        M.empty
+        [fun, prog]
+        (\(AssignToInput n _) -> n == "a")
+      expectUnitsPassWithMode CodesysLike M.empty [fun, prog]
+    it "VAR_IN_OUT literal: both modes fail (InOutArgNotLValue)" $ do
+      let fun =
+            "FUNCTION G : INT\n\
+            \VAR_IN_OUT a : INT; END_VAR\n\
+            \a := a + 1; G := a;\n"
+          progBad =
+            "PROGRAM P\nVAR y: INT; END_VAR\ny := G(1);\n"
+          progGood =
+            "PROGRAM P\nVAR v: INT; y: INT; END_VAR\ny := G(v);\n"
+      -- literal → NG
+      expectUnitsFailWithDetailWithMode @InOutArgNotLValue
+        Strict
+        M.empty
+        [fun, progBad]
+        (\(InOutArgNotLValue _ f) -> f == "G")
+      expectUnitsFailWithDetailWithMode @InOutArgNotLValue
+        CodesysLike
+        M.empty
+        [fun, progBad]
+        (\(InOutArgNotLValue _ f) -> f == "G")
+      -- 変数 → OK（両モード）
+      expectUnitsPassWithMode Strict M.empty [fun, progGood]
+      expectUnitsPassWithMode CodesysLike M.empty [fun, progGood]
