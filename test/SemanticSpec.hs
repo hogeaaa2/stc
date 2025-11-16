@@ -2229,3 +2229,76 @@ main = hspec $ do
         funsAnyFamilies
         srcs
         (\(ArgTypeMismatch fname _ _ _ _ _) -> fname == "ID_ANY_DURATION")
+
+  describe "call-arg mixing (positional + named)" $ do
+    -- 共通：3引数の関数F(x,y,z) : INT（本体は単純でOK）
+    let funF =
+          "FUNCTION F : INT\n\
+          \VAR_INPUT x : INT; y : INT; z : INT; END_VAR\n\
+          \F := x;\n"
+        -- 正常系は CodesysLike で回す（Strictでも同じ挙動だが雑音を避ける）
+        runOK :: [Text] -> Expectation
+        runOK = expectUnitsPassWithMode CodesysLike M.empty
+        -- 失敗系は CodesysLike で十分（モード非依存）
+        runNG ::
+          forall err.
+          (err :| AllErrs, Typeable err) =>
+          [Text] -> -- srcs
+          (err -> Bool) -> -- predicate
+          Expectation
+        runNG = expectUnitsFailWithDetailWithMode @err CodesysLike M.empty
+
+    -- 1) すべて位置引数 → OK
+    it "accepts all positional" $ do
+      let prog = "PROGRAM P\nVAR r: INT; END_VAR\nr := F(1, 2, 3);\n"
+      runOK [funF, prog]
+
+    -- 2) すべて名前付き（順不同） → OK
+    it "accepts all named in any order" $ do
+      let prog = "PROGRAM P\nVAR r: INT; END_VAR\nr := F(z := 3, x := 1, y := 2);\n"
+      runOK [funF, prog]
+
+    -- 3) 位置のあとに残りを名前付きで補完 → OK
+    it "accepts mixed: positional first, then named for the rest" $ do
+      let prog = "PROGRAM P\nVAR r: INT; END_VAR\nr := F(1, z := 3, y := 2);\n"
+      runOK [funF, prog]
+
+    -- 4) 名前付きのあとに位置 → NG (PositionalAfterNamed)
+    it "rejects positional after any named" $ do
+      let prog = "PROGRAM P\nVAR r: INT; END_VAR\nr := F(x := 1, 2, 3);\n"
+      runNG @PositionalAfterNamed [funF, prog] (\_ -> True)
+
+    -- 5) 同じ名前を2回（両方named）→ NG (DuplicateArgName)
+    it "rejects duplicate named" $ do
+      let prog = "PROGRAM P\nVAR r: INT; END_VAR\nr := F(x := 1, x := 2, z := 3);\n"
+      runNG @DuplicateArgName
+        [funF, prog]
+        (\(DuplicateArgName fname nm _) -> fname == "F" && nm == "x")
+
+    -- 6) 位置でxを埋めた後に namedでxを再指定 → NG (DuplicateArgName)
+    it "rejects duplicate via positional + named for same param" $ do
+      let prog = "PROGRAM P\nVAR r: INT; END_VAR\nr := F(1, y := 2, x := 9);\n"
+      runNG @DuplicateArgName
+        [funF, prog]
+        (\(DuplicateArgName fname nm _) -> fname == "F" && nm == "x")
+
+    -- 7) 未知の名前 → NG (UnknownArgName)
+    it "rejects unknown arg name" $ do
+      let prog = "PROGRAM P\nVAR r: INT; END_VAR\nr := F(foo := 1, y := 2, z := 3);\n"
+      runNG @UnknownArgName
+        [funF, prog]
+        (\(UnknownArgName fname nm _) -> fname == "F" && nm == "foo")
+
+    -- 8) 引数不足 → NG (BadArgCount)
+    it "rejects too few args" $ do
+      let prog = "PROGRAM P\nVAR r: INT; END_VAR\nr := F(1, 2);\n"
+      runNG @BadArgCount
+        [funF, prog]
+        (\(BadArgCount fname _ expected actual) -> fname == "F" && expected == 3 && actual == 2)
+
+    -- 9) 引数過多 → NG (BadArgCount)
+    it "rejects too many args" $ do
+      let prog = "PROGRAM P\nVAR r: INT; END_VAR\nr := F(1, 2, 3, 4);\n"
+      runNG @BadArgCount
+        [funF, prog]
+        (\(BadArgCount fname _ expected actual) -> fname == "F" && expected == 3 && actual == 4)
