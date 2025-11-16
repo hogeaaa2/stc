@@ -28,6 +28,13 @@ toIdent txt =
       end = start {sourceColumn = mkPos (1 + T.length txt)}
    in Loc (Span start end) txt
 
+paramMap :: [(Text, SigTy)] -> M.Map Text ParamInfo
+paramMap xs =
+  M.fromList
+    [ (n, ParamInfo {piType = ty, piDir = ParamIn, piPos = ix})
+    | (ix, (n, ty)) <- zip [0 ..] xs
+    ]
+
 elaborateProjectTest :: FuncEnv -> [Text] -> VEither AllErrs [Unit]
 elaborateProjectTest fenv srcs =
   case parseUnits' srcs of
@@ -1666,15 +1673,15 @@ main = hspec $ do
         funsSimple :: FuncEnv
         funsSimple =
           M.fromList
-            [ ("ADD", FuncSig {fsName = toIdent "ADD", fsArgs = [("x", SigMono INT), ("y", SigMono INT)], fsRet = Just (SigMono INT), fsKind = FKFunction}),
-              ("SUB", FuncSig {fsName = toIdent "SUB", fsArgs = [("x", SigMono INT), ("y", SigMono INT)], fsRet = Just (SigMono INT), fsKind = FKFunction}),
-              ("NOP", FuncSig {fsName = toIdent "NOP", fsArgs = [], fsRet = Just (SigMono INT), fsKind = FKFunction})
+            [ ("ADD", FuncSig {fsName = toIdent "ADD", fsArgs = paramMap [("x", SigMono INT), ("y", SigMono INT)], fsRet = Just (SigMono INT), fsKind = FKFunction}),
+              ("SUB", FuncSig {fsName = toIdent "SUB", fsArgs = paramMap [("x", SigMono INT), ("y", SigMono INT)], fsRet = Just (SigMono INT), fsKind = FKFunction}),
+              ("NOP", FuncSig {fsName = toIdent "NOP", fsArgs = paramMap [], fsRet = Just (SigMono INT), fsKind = FKFunction})
             ]
 
         funsReal :: FuncEnv
         funsReal =
           M.fromList
-            [ ("MIX", FuncSig {fsName = toIdent "MIX", fsArgs = [("a", SigMono INT), ("b", SigMono REAL)], fsRet = Just (SigMono REAL), fsKind = FKFunction})
+            [ ("MIX", FuncSig {fsName = toIdent "MIX", fsArgs = paramMap [("a", SigMono INT), ("b", SigMono REAL)], fsRet = Just (SigMono REAL), fsKind = FKFunction})
             ]
         -- 成功ケース
         ok =
@@ -1752,7 +1759,7 @@ main = hspec $ do
               ( "ID_ANY_INT",
                 FuncSig
                   { fsName = toIdent "ID_ANY_INT",
-                    fsArgs = [("IN", SigGen GSTAnyInt (TV 0))],
+                    fsArgs = paramMap [("IN", SigGen GSTAnyInt (TV 0))],
                     fsRet = Just $ SigGen GSTAnyInt (TV 0),
                     fsKind = FKFunction
                   }
@@ -1762,9 +1769,10 @@ main = hspec $ do
                 FuncSig
                   { fsName = toIdent "ADD_ANY_NUM",
                     fsArgs =
-                      [ ("X", SigGen GSTAnyNum (TV 0)),
-                        ("Y", SigGen GSTAnyNum (TV 0))
-                      ],
+                      paramMap
+                        [ ("X", SigGen GSTAnyNum (TV 0)),
+                          ("Y", SigGen GSTAnyNum (TV 0))
+                        ],
                     fsRet = Just $ SigGen GSTAnyNum (TV 0),
                     fsKind = FKFunction
                   }
@@ -1774,10 +1782,11 @@ main = hspec $ do
                 FuncSig
                   { fsName = toIdent "SEL_ANY",
                     fsArgs =
-                      [ ("G", SigMono BOOL),
-                        ("IN0", SigGen GSTAny (TV 0)),
-                        ("IN1", SigGen GSTAny (TV 0))
-                      ],
+                      paramMap
+                        [ ("G", SigMono BOOL),
+                          ("IN0", SigGen GSTAny (TV 0)),
+                          ("IN1", SigGen GSTAny (TV 0))
+                        ],
                     fsRet = Just $ SigGen GSTAny (TV 0),
                     fsKind = FKFunction
                   }
@@ -1788,9 +1797,10 @@ main = hspec $ do
                 FuncSig
                   { fsName = toIdent "PAIR2",
                     fsArgs =
-                      [ ("A", SigGen GSTAnyInt (TV 0)),
-                        ("B", SigGen GSTAnyInt (TV 1))
-                      ],
+                      paramMap
+                        [ ("A", SigGen GSTAnyInt (TV 0)),
+                          ("B", SigGen GSTAnyInt (TV 1))
+                        ],
                     fsRet = Just $ SigMono BOOL,
                     fsKind = FKFunction
                   }
@@ -1883,7 +1893,7 @@ main = hspec $ do
                 FuncSig
                   { fsName = toIdent "G",
                     fsKind = FKFunction,
-                    fsArgs = [("x", SigMono REAL)],
+                    fsArgs = paramMap [("x", SigMono REAL)],
                     fsRet = Just $ SigGen GSTAnyInt (TV 0) -- ★ 具体型でない
                   }
               )
@@ -1913,7 +1923,7 @@ main = hspec $ do
                   FuncSig
                     { fsName = toIdent "PROC",
                       fsKind = FKFunction,
-                      fsArgs = [("x", SigMono INT)],
+                      fsArgs = paramMap [("x", SigMono INT)],
                       fsRet = Nothing
                     }
                 )
@@ -2057,8 +2067,9 @@ main = hspec $ do
         Strict
         M.empty
         [fun, prog]
-        (\(AssignToInput n _) -> n == "a")
+        (\(AssignToInput _ n) -> n == "a")
       expectUnitsPassWithMode CodesysLike M.empty [fun, prog]
+
     it "VAR_IN_OUT literal: both modes fail (InOutArgNotLValue)" $ do
       let fun =
             "FUNCTION G : INT\n\
@@ -2073,12 +2084,12 @@ main = hspec $ do
         Strict
         M.empty
         [fun, progBad]
-        (\(InOutArgNotLValue _ f) -> f == "G")
+        (\(InOutArgNotLValue _ f v) -> f == "G" && v == "a")
       expectUnitsFailWithDetailWithMode @InOutArgNotLValue
         CodesysLike
         M.empty
         [fun, progBad]
-        (\(InOutArgNotLValue _ f) -> f == "G")
+        (\(InOutArgNotLValue _ f v) -> f == "G" && v == "a")
       -- 変数 → OK（両モード）
       expectUnitsPassWithMode Strict M.empty [fun, progGood]
       expectUnitsPassWithMode CodesysLike M.empty [fun, progGood]

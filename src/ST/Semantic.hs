@@ -17,6 +17,8 @@ module ST.Semantic
     TVarId (..),
     FuncKind (..),
     SemMode (..),
+    ParamInfo (..),
+    ParamDirKind (..),
     AllErrs,
     DuplicateVar (..),
     UnknownVar (..),
@@ -82,7 +84,7 @@ type TVSubst = M.Map TVarId STType
 -- Functionで「到達可能な戻り値代入」が必須ではない（IR木生成側で初期値代入してカバー）
 -- Strict:
 -- Functionで「到達可能な戻り値代入」が必須
-data SemMode = CodesysLike | Strict
+data SemMode = CodesysLike | Strict deriving (Eq, Show)
 
 newtype TVarId = TV Int
   deriving (Eq, Ord, Show)
@@ -108,6 +110,13 @@ data ParamSig = ParamSig
   }
   deriving (Eq, Show)
 
+data ParamInfo = ParamInfo
+  { piType :: SigTy, -- 例: SigMono INT / SigGen ...
+    piDir :: ParamDirKind, -- In / Out / InOut
+    piPos :: Int -- 宣言順（0-based）
+  }
+  deriving (Eq, Show)
+
 data FuncKind
   = FKFunction
   | FKFunctionBlock
@@ -116,7 +125,7 @@ data FuncKind
 data FuncSig = FuncSig
   { fsName :: Identifier,
     fsKind :: FuncKind,
-    fsArgs :: [(Text, SigTy)], -- 位置/名前付きの両対応。例: [("x", INT), ("y", INT)]
+    fsArgs :: M.Map Text ParamInfo,
     fsRet :: Maybe SigTy
   }
   deriving (Eq, Show)
@@ -139,7 +148,7 @@ type EnumName = Text
 
 type TypeName = Text
 
-type FunctionName = Text
+type POUName = Text
 
 type ArgName = Text
 
@@ -201,16 +210,16 @@ data IndexOutOfBounds = IndexOutOfBounds VariableName Span Int RangeFrom RangeTo
 
 data WhyDidYouComeHere = WhyDidYouComeHere deriving (Eq, Show)
 
-data UnknownFunction = UnknownFunction FunctionName Span deriving (Eq, Show)
+data UnknownFunction = UnknownFunction POUName Span deriving (Eq, Show)
 
-data BadArgCount = BadArgCount FunctionName Span ExpectedElems ActualElems deriving (Eq, Show)
+data BadArgCount = BadArgCount POUName Span ExpectedElems ActualElems deriving (Eq, Show)
 
 -- ArgPos は 1 始まりの実引数位置
-data ArgTypeMismatch = ArgTypeMismatch FunctionName (Maybe ArgName) ArgPos ExpectedSTType ActualSTType Span deriving (Eq, Show)
+data ArgTypeMismatch = ArgTypeMismatch POUName (Maybe ArgName) ArgPos ExpectedSTType ActualSTType Span deriving (Eq, Show)
 
-data UnknownArgName = UnknownArgName FunctionName ArgName Span deriving (Eq, Show) -- 関数名, 未知の引数名
+data UnknownArgName = UnknownArgName POUName ArgName Span deriving (Eq, Show) -- 関数名, 未知の引数名
 
-data DuplicateArgName = DuplicateArgName FunctionName ArgName Span deriving (Eq, Show) -- 重複引数名
+data DuplicateArgName = DuplicateArgName POUName ArgName Span deriving (Eq, Show) -- 重複引数名
 
 data PositionalAfterNamed = PositionalAfterNamed Text Span deriving (Eq, Show) -- 名前付きの後に位置引数が現れた
 
@@ -218,15 +227,15 @@ newtype DuplicateFunction = DuplicateFunction Text deriving (Eq, Show)
 
 newtype InternalError = InternalError Text deriving (Eq, Show)
 
-newtype MissingReturn = MissingReturn FunctionName deriving (Eq, Show)
+newtype MissingReturn = MissingReturn POUName deriving (Eq, Show)
 
-newtype UnsupportedGenericReturn = UnsupportedGenericReturn FunctionName deriving (Eq, Show)
+newtype UnsupportedGenericReturn = UnsupportedGenericReturn POUName deriving (Eq, Show)
 
-data NoReturnValue = NoReturnValue FilePath FunctionName deriving (Eq, Show)
+data NoReturnValue = NoReturnValue FilePath POUName deriving (Eq, Show)
 
 data AssignToInput = AssignToInput FilePath VariableName deriving (Eq, Show)
 
-data InOutArgNotLValue = InOutArgNotLValue FilePath VariableName deriving (Eq, Show)
+data InOutArgNotLValue = InOutArgNotLValue FilePath POUName VariableName deriving (Eq, Show)
 
 type AllErrs =
   [ AssignToConst,
@@ -420,7 +429,9 @@ elaborateFunction ::
     MissingReturn :| e,
     TypeCycle :| e,
     UnknownType :| e,
-    NoReturnValue :| e
+    NoReturnValue :| e,
+    InOutArgNotLValue :| e,
+    AssignToInput :| e
   ) =>
   SemMode -> TypeEnv -> FuncEnv -> Function -> VEither e Function
 elaborateFunction mode tenv fenv fn = do
@@ -521,9 +532,6 @@ insertFuncSig sig env =
         Just _ -> VEither.fromLeft (DuplicateFunction name)
         Nothing -> pure (M.insert name sig env)
 
-paramSigToArg :: ParamSig -> (Text, SigTy)
-paramSigToArg (ParamSig name ty _dir) = (name, SigMono ty)
-
 addFunction ::
   forall e.
   ( TypeCycle :| e,
@@ -539,11 +547,25 @@ addFunction tenv env f = do
 
   -- パラメータ一覧を構築
   params <- collectPOUParams tenv (funcVarDecls f)
-  let sig =
+
+  let fsArgsMap :: M.Map Text ParamInfo
+      fsArgsMap =
+        M.fromList
+          [ ( psName p,
+              ParamInfo
+                { piType = SigMono (psType p),
+                  piDir = psDir p,
+                  piPos = ix
+                }
+            )
+          | (ix, p) <- zip [0 ..] params
+          ]
+
+      sig =
         FuncSig
           { fsName = name,
             fsKind = FKFunction,
-            fsArgs = map paramSigToArg params,
+            fsArgs = fsArgsMap,
             fsRet = Just $ SigMono retTy'
           }
   insertFuncSig sig env
@@ -557,15 +579,26 @@ addFunctionBlock ::
   TypeEnv -> FuncEnv -> FunctionBlock -> VEither e FuncEnv
 addFunctionBlock tenv env (FunctionBlock {fbName, fbVarDecls}) = do
   params <- collectPOUParams tenv fbVarDecls
-  let args = map paramSigToArg params
-  insertFuncSig
-    FuncSig
-      { fsName = fbName,
-        fsKind = FKFunctionBlock,
-        fsArgs = args,
-        fsRet = Nothing
-      }
-    env
+  let fsArgsMap :: M.Map Text ParamInfo
+      fsArgsMap =
+        M.fromList
+          [ ( psName p,
+              ParamInfo
+                { piType = SigMono (psType p),
+                  piDir = psDir p,
+                  piPos = ix
+                }
+            )
+          | (ix, p) <- zip [0 ..] params
+          ]
+      sig =
+        FuncSig
+          { fsName = fbName,
+            fsKind = FKFunctionBlock,
+            fsArgs = fsArgsMap,
+            fsRet = Nothing
+          }
+  insertFuncSig sig env
 
 collectPOUParams ::
   forall e.
@@ -846,7 +879,8 @@ inferType ::
     PositionalAfterNamed :| e,
     BadArgCount :| e,
     UnsupportedGenericReturn :| e,
-    NoReturnValue :| e
+    NoReturnValue :| e,
+    InOutArgNotLValue :| e
   ) =>
   Env ->
   Expr ->
@@ -974,26 +1008,33 @@ inferType env = \case
         fspan = locSpan fn
         tenv = envTypes env
 
-    FuncSig _ _ fsArgs fsRet <-
+    sig@(FuncSig _ _ fsArgs fsRet) <-
       case M.lookup fname (envFuncs env) of
         Nothing -> VEither.fromLeft $ UnknownFunction fname fspan
         Just sig' -> pure sig'
 
-    let paramCount = length fsArgs
-        nameToIx = M.fromList (zip (map fst fsArgs) [0 ..])
+    -- let paramCount = length fsArgs
+    -- nameToIx = M.fromList (zip (map fst fsArgs) [0 ..])
 
     -- 名前付き/位置引数を正規化して、param順のリストに
-    orderedArgs <- assignArgs fname nameToIx paramCount args
+    orderedArgs <- assignArgs fname sig args
     -- orderedArgs :: [CallArg], length == paramCount
 
     -- 型変数束縛を集めながら各引数チェック
     subst <-
       foldM
-        ( \subst (i, (_pName, pSig), carg) -> do
+        ( \subst (i, pname, carg) -> do
             let argE = callArgExpr carg
                 mbName = callArgName carg
                 spArg = spanOfExpr argE
-                pos = i -- 1-based position
+                ParamInfo {piType = pSig, piDir = pDir} = fsArgs M.! pname
+
+            -- ★ 追加: IN_OUT は実引数が LValue 必須（両モード共通）
+            when (pDir == ParamInOut) $
+              case exprToLValue argE of
+                Nothing -> VEither.fromLeft (InOutArgNotLValue (sourceNameOf fn) fname pname)
+                Just _ -> pure ()
+
             argTy <- inferType env argE
 
             case pSig of
@@ -1001,7 +1042,7 @@ inferType env = \case
               SigMono expectedTy -> do
                 unless (assignCoerce tenv argTy expectedTy) $
                   VEither.fromLeft $
-                    ArgTypeMismatch fname mbName pos expectedTy argTy spArg
+                    ArgTypeMismatch fname mbName i expectedTy argTy spArg
                 pure subst
 
               -- ANY_* パラメータ
@@ -1009,7 +1050,7 @@ inferType env = \case
                 ok <- gstMember tenv argTy gst
                 unless ok $
                   VEither.fromLeft $
-                    ArgTypeMismatch fname mbName pos argTy argTy spArg
+                    ArgTypeMismatch fname mbName i argTy argTy spArg
 
                 case M.lookup tv subst of
                   -- まだ束縛されてない: この引数型で束縛
@@ -1021,10 +1062,10 @@ inferType env = \case
                       then pure subst
                       else
                         VEither.fromLeft $
-                          ArgTypeMismatch fname mbName pos boundTy argTy spArg
+                          ArgTypeMismatch fname mbName i boundTy argTy spArg
         )
         M.empty
-        (zip3 [1 ..] fsArgs orderedArgs)
+        (zip3 [1 ..] (inputParamOrder sig) orderedArgs)
 
     -- 束縛済み型変数に従って「戻り値」を具体型に落とす（未束縛ならエラー）
     case fsRet of
@@ -1143,27 +1184,45 @@ inferType env = \case
         _ -> VEither.fromLeft $ TypeMismatch' tb0
 
 assignArgs ::
+  forall e.
   ( UnknownArgName :| e,
     DuplicateArgName :| e,
     PositionalAfterNamed :| e,
     BadArgCount :| e
   ) =>
   Text -> -- 関数名（診断用）
-  M.Map Text Int -> -- pname -> index
-  Int -> -- パラメータ数
+  FuncSig ->
   [CallArg] -> -- 実引数
   VEither e [CallArg]
-assignArgs fname nameToIx paramCount args = go 0 False M.empty args
+assignArgs fname sig args = go 0 False M.empty args
   where
+    -- 受け付け対象（In / InOut）だけを宣言順に
+    order :: [Text]
+    order =
+      map fst
+        . sortOn (piPos . snd)
+        . filter (\(_, p) -> piDir p /= ParamOut)
+        . M.toList
+        $ fsArgs sig
+
+    nameToIx :: M.Map Text Int
+    nameToIx = M.fromList (zip order [0 ..])
+
+    expected :: Int
+    expected = length order
+
+    actualCount :: Int
     actualCount = length args
+
+    go :: Int -> Bool -> M.Map Int CallArg -> [CallArg] -> VEither e [CallArg]
     go nextPos seenNamed acc = \case
       -- 引数をすべて消費したタイミングで「足りてるか？」判定
       [] ->
-        if M.size acc == paramCount
+        if M.size acc == expected
           then VRight $ map snd $ M.toList acc
           else
             VEither.fromLeft $
-              BadArgCount fname (callArgSpan $ acc M.! M.size acc) paramCount actualCount
+              BadArgCount fname (callArgSpan $ acc M.! M.size acc) expected actualCount
       (c : cs) ->
         case c of
           -- 位置引数
@@ -1171,9 +1230,9 @@ assignArgs fname nameToIx paramCount args = go 0 False M.empty args
             | seenNamed ->
                 VEither.fromLeft $
                   PositionalAfterNamed fname (spanOfExpr e)
-            | nextPos >= paramCount ->
+            | nextPos >= expected ->
                 VEither.fromLeft $
-                  BadArgCount fname (callArgSpan c) paramCount actualCount
+                  BadArgCount fname (callArgSpan c) expected actualCount
             | otherwise ->
                 go (nextPos + 1) seenNamed (M.insert nextPos c acc) cs
           -- 名前付き引数
@@ -1222,7 +1281,8 @@ lvalueType ::
     PositionalAfterNamed :| e,
     BadArgCount :| e,
     UnsupportedGenericReturn :| e,
-    NoReturnValue :| e
+    NoReturnValue :| e,
+    InOutArgNotLValue :| e
   ) =>
   Env ->
   STType ->
@@ -1298,7 +1358,8 @@ elabVar ::
     PositionalAfterNamed :| e,
     BadArgCount :| e,
     UnsupportedGenericReturn :| e,
-    NoReturnValue :| e
+    NoReturnValue :| e,
+    InOutArgNotLValue :| e
   ) =>
   Env -> Variable -> VEither e Variable
 elabVar env v =
@@ -1342,7 +1403,8 @@ checkExprAssignable ::
     PositionalAfterNamed :| e,
     BadArgCount :| e,
     UnsupportedGenericReturn :| e,
-    NoReturnValue :| e
+    NoReturnValue :| e,
+    InOutArgNotLValue :| e
   ) =>
   Env ->
   -- | tgt: 左辺の期待型（宣言型）
@@ -1402,7 +1464,8 @@ checkArrayAggInit ::
     PositionalAfterNamed :| e,
     BadArgCount :| e,
     UnsupportedGenericReturn :| e,
-    NoReturnValue :| e
+    NoReturnValue :| e,
+    InOutArgNotLValue :| e
   ) =>
   Env ->
   Identifier -> -- 変数名（診断用）
@@ -1460,7 +1523,8 @@ checkStructAggInit ::
     PositionalAfterNamed :| e,
     BadArgCount :| e,
     UnsupportedGenericReturn :| e,
-    NoReturnValue :| e
+    NoReturnValue :| e,
+    InOutArgNotLValue :| e
   ) =>
   Env ->
   Identifier ->
@@ -1548,7 +1612,9 @@ checkStmt ::
     PositionalAfterNamed :| e,
     BadArgCount :| e,
     UnsupportedGenericReturn :| e,
-    NoReturnValue :| e
+    NoReturnValue :| e,
+    InOutArgNotLValue :| e,
+    AssignToInput :| e
   ) =>
   Env ->
   Statement ->
@@ -1568,6 +1634,16 @@ checkStmt env = \case
         if assignCoerce (envTypes env) tr tl
           then VRight ()
           else VEither.fromLeft $ TypeMismatch (lvalueRootName lv) (spanOfExpr e) tl tr
+
+    when (envMode env == Strict) $
+      case baseVarName lv of
+        Just n ->
+          case M.lookup n (envVars env) of
+            Just vi
+              | viKind vi == VKInput ->
+                  VEither.fromLeft (AssignToInput (sourceNameOf $ fromLValue lv) n)
+            _ -> pure ()
+        Nothing -> pure ()
   If c0 th0 elsifs els -> do
     t0 <- inferType env c0
     if t0 == BOOL
@@ -1948,7 +2024,7 @@ instantiateSigTy _tenv subst (SigGen gst tv) =
 -- 戻り値位置専用：未束縛TVなら UnsupportedGenericReturn を投げる
 instantiateSigTyRet ::
   (UnsupportedGenericReturn :| e) =>
-  TypeEnv -> TVSubst -> FunctionName -> SigTy -> VEither e STType
+  TypeEnv -> TVSubst -> POUName -> SigTy -> VEither e STType
 instantiateSigTyRet _ _ _ (SigMono t) = pure t
 instantiateSigTyRet _ subst fname (SigGen _gst tv) =
   case M.lookup tv subst of
@@ -1969,6 +2045,12 @@ baseVarName = \case
   LVar ident -> Just (locVal ident)
   LIndex lv _ -> baseVarName lv
   LField lv _ -> baseVarName lv
+
+fromLValue :: LValue -> Identifier
+fromLValue = \case
+  LVar ident -> ident
+  LIndex lv _ -> fromLValue lv
+  LField lv _ -> fromLValue lv
 
 -- 要求された変数名集合 req が、ブロック実行後に「確実に代入済み」になるか
 mustAssignAll :: Set Text -> [Statement] -> Bool
@@ -2005,3 +2087,18 @@ mustAssignAll req body =
         acc -- 0回実行があり得る
       Skip ->
         acc
+
+exprToLValue :: Expr -> Maybe LValue
+exprToLValue = \case
+  EVar x -> Just (LVar x)
+  EField e f -> LField <$> exprToLValue e <*> pure f
+  EIndex e ix -> LIndex <$> exprToLValue e <*> pure ix
+  _ -> Nothing
+
+inputParamOrder :: FuncSig -> [Text]
+inputParamOrder =
+  map fst
+    . sortOn (piPos . snd)
+    . filter (\(_, p) -> piDir p /= ParamOut)
+    . M.toList
+    . fsArgs

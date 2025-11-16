@@ -47,7 +47,7 @@
      * 正常系：全パスで `F := ...` 済み。
      * 異常系：どこかの分岐で未代入 → `MissingReturn`。
 
-2. **パラメータ方向（VAR_INPUT/OUTPUT/IN_OUT）ルール**
+2. ✅ **パラメータ方向（VAR_INPUT/OUTPUT/IN_OUT）ルール**
 
    * Parser は OK なので Semantics で適用：
 
