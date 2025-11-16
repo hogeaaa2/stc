@@ -57,7 +57,7 @@ where
 import Control.Monad (foldM, forM, forM_, guard, unless, when)
 import Data.List (sortOn)
 import Data.Map.Strict qualified as M
-import Data.Maybe (catMaybes, fromMaybe)
+import Data.Maybe (catMaybes, fromJust, fromMaybe, listToMaybe)
 import Data.Set (Set)
 import Data.Set qualified as Set
 import Data.Text (Text)
@@ -1409,7 +1409,8 @@ checkArrayAggInit env vname tgtTy0 es = do
 
       if length es > len
         then do
-          let sp = spanFromTo (spanOfExpr (head es)) (spanOfExpr (last es))
+          let headExpr = fromJust $ listToMaybe es
+              sp = spanFromTo (spanOfExpr headExpr) (spanOfExpr (last es))
           VEither.fromLeft $ TooManyAggElems (locVal vname) sp len (length es)
         else do
           -- 既存の単一要素割当ルールで各要素を検査
