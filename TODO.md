@@ -57,7 +57,7 @@
    * VarEnv へ投入時に `VarKind` を保持（`VarInfo.viKind` 既存）。
    * テスト：INPUT書き換えNG、IN_OUTにリテラル渡しNG、OUTPUT未代入NG。
 
-3. **ANY-family の網羅性拡張**
+3. ✅ **ANY-family の網羅性拡張**
 
    * `gstMember` を `ANY_BIT/ANY_STRING/ANY_DATE/ANY_DURATION` まで拡充。
    * 代表値（デフォルト）と等価判定の整理（`nominalEq` で十分か確認）。

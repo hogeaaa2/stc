@@ -1969,37 +1969,71 @@ gstMember ::
   ) =>
   TypeEnv -> STType -> GSTType -> VEither e Bool
 gstMember tenv ty0 gst = do
+  -- Named などはできるだけ解決してから判定
   ty <- case resolveType @e tenv ty0 of
     VRight t -> pure t
-    VLeft _ -> pure ty0 -- 解決失敗時は生値で判定（だいたい来ない想定）
+    VLeft _ -> pure ty0 -- 解決失敗時は生値で判定（テスト的には稀）
+  let isIntFamily = \case
+        SINT -> True
+        INT -> True
+        DINT -> True
+        LINT -> True
+        USINT -> True
+        UINT -> True
+        UDINT -> True
+        ULINT -> True
+        -- 将来: Subrange base → isIntFamily base
+        _ -> False
+
+      isRealFamily = \case
+        REAL -> True
+        LREAL -> True
+        _ -> False
+
+      isNumFamily t = isIntFamily t || isRealFamily t
+
+      isBitFamily = \case
+        BOOL -> True
+        BYTE -> True
+        WORD -> True
+        DWORD -> True
+        LWORD -> True
+        _ -> False
+
+      isStringFamily = \case
+        CHAR -> True
+        WCHAR -> True
+        STRING _ -> True
+        WSTRING _ -> True
+        _ -> False
+
+      isDateFamily = \case
+        DATE -> True
+        TOD -> True
+        DT -> True
+        -- 将来: LDATE / LTOD / LDT を追加
+        _ -> False
+
+      isDurationFamily = \case
+        TIME -> True
+        -- 将来: LTIME を追加
+        _ -> False
+
+      -- 「配列/構造体以外」を elementary として扱う（Enum/別名は含む）
+      isElementary = \case
+        Struct _ -> False
+        Array _ _ -> False
+        _ -> True
+
   pure $ case gst of
     GSTAny -> isElementary ty
-    GSTAnyInt -> ty `elem` [SINT, INT, DINT, LINT, USINT, UINT, UDINT, ULINT]
-    GSTAnyNum -> ty `elem` [SINT, INT, DINT, LINT, USINT, UINT, UDINT, ULINT, REAL, LREAL]
-    GSTAnyReal -> ty `elem` [REAL, LREAL]
-    GSTAnyBit -> ty `elem` [BOOL, BYTE, WORD, DWORD, LWORD]
-    GSTAnyString -> case ty of
-      CHAR -> True
-      WCHAR -> True
-      STRING _ -> True
-      WSTRING _ -> True
-      _ -> False
-    GSTAnyDate -> case ty of
-      DATE -> True
-      TOD -> True
-      DT -> True
-      -- LDATE/LTOD/LDT 等は追加時にここへ
-      _ -> False
-    GSTAnyDuration -> case ty of
-      TIME -> True
-      -- LTIME 追加時にここへ
-      _ -> False
-  where
-    -- 「とりあえず配列/構造体以外」を elementary として扱う素朴版
-    isElementary = \case
-      Struct _ -> False
-      Array _ _ -> False
-      _ -> True
+    GSTAnyInt -> isIntFamily ty
+    GSTAnyNum -> isNumFamily ty
+    GSTAnyReal -> isRealFamily ty
+    GSTAnyBit -> isBitFamily ty
+    GSTAnyString -> isStringFamily ty
+    GSTAnyDate -> isDateFamily ty
+    GSTAnyDuration -> isDurationFamily ty
 
 -- SigTy を具体型に落とす
 instantiateSigTy ::

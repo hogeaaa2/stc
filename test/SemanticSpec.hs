@@ -35,6 +35,13 @@ paramMap xs =
     | (ix, (n, ty)) <- zip [0 ..] xs
     ]
 
+paramMapDir :: [(Text, SigTy, ParamDirKind)] -> M.Map Text ParamInfo
+paramMapDir xs =
+  M.fromList
+    [ (n, ParamInfo {piType = ty, piDir = dir, piPos = ix})
+    | (ix, (n, ty, dir)) <- zip [0 ..] xs
+    ]
+
 elaborateProjectTest :: FuncEnv -> [Text] -> VEither AllErrs [Unit]
 elaborateProjectTest fenv srcs =
   case parseUnits' srcs of
@@ -2093,3 +2100,132 @@ main = hspec $ do
       -- 変数 → OK（両モード）
       expectUnitsPassWithMode Strict M.empty [fun, progGood]
       expectUnitsPassWithMode CodesysLike M.empty [fun, progGood]
+
+  describe "ANY-family (gstMember) coverage" $ do
+    let funsAnyFamilies :: FuncEnv
+        funsAnyFamilies =
+          let mk name gst =
+                ( name,
+                  FuncSig
+                    { fsName = toIdent name,
+                      fsKind = FKFunction,
+                      fsArgs = paramMapDir [("x", SigGen gst (TV 0), ParamIn)],
+                      fsRet = Just (SigMono INT)
+                    }
+                )
+           in M.fromList
+                [ mk "ID_ANY" GSTAny,
+                  mk "ID_ANY_INT" GSTAnyInt,
+                  mk "ID_ANY_NUM" GSTAnyNum,
+                  mk "ID_ANY_REAL" GSTAnyReal,
+                  mk "ID_ANY_BIT" GSTAnyBit,
+                  mk "ID_ANY_STRING" GSTAnyString,
+                  mk "ID_ANY_DATE" GSTAnyDate,
+                  mk "ID_ANY_DURATION" GSTAnyDuration
+                ]
+    -- ANY: OK = INT, NG = STRUCT
+    it "ANY accepts INT" $ do
+      let srcs = ["PROGRAM P\nVAR x: INT; y: INT; END_VAR\ny := ID_ANY(x);\n"]
+      expectUnitsPassWithMode CodesysLike funsAnyFamilies srcs
+
+    it "ANY rejects STRUCT" $ do
+      let srcs =
+            [ "TYPE R : STRUCT a: INT; END_STRUCT; END_TYPE\n",
+              "PROGRAM P\nVAR r: R; y: INT; END_VAR\ny := ID_ANY(r);\n"
+            ]
+      expectUnitsFailWithDetailWithMode @ArgTypeMismatch
+        CodesysLike
+        funsAnyFamilies
+        srcs
+        (\(ArgTypeMismatch fname _ _ _ _ _) -> fname == "ID_ANY")
+
+    -- ANY_INT: OK = SINT/INT/…、NG = REAL/BOOL
+    it "ANY_INT accepts INT" $ do
+      let srcs = ["PROGRAM P\nVAR x: INT; y: INT; END_VAR\ny := ID_ANY_INT(x);\n"]
+      expectUnitsPassWithMode CodesysLike funsAnyFamilies srcs
+
+    it "ANY_INT rejects REAL" $ do
+      let srcs = ["PROGRAM P\nVAR r: REAL; y: INT; END_VAR\ny := ID_ANY_INT(r);\n"]
+      expectUnitsFailWithDetailWithMode @ArgTypeMismatch
+        CodesysLike
+        funsAnyFamilies
+        srcs
+        (\(ArgTypeMismatch fname _ _ _ _ _) -> fname == "ID_ANY_INT")
+
+    -- ANY_NUM: OK = INT/LREAL、NG = BOOL
+    it "ANY_NUM accepts LREAL" $ do
+      let srcs = ["PROGRAM P\nVAR z: LREAL; y: INT; END_VAR\ny := ID_ANY_NUM(z);\n"]
+      expectUnitsPassWithMode CodesysLike funsAnyFamilies srcs
+
+    it "ANY_NUM rejects BOOL" $ do
+      let srcs = ["PROGRAM P\nVAR b: BOOL; y: INT; END_VAR\ny := ID_ANY_NUM(b);\n"]
+      expectUnitsFailWithDetailWithMode @ArgTypeMismatch
+        CodesysLike
+        funsAnyFamilies
+        srcs
+        (\(ArgTypeMismatch fname _ _ _ _ _) -> fname == "ID_ANY_NUM")
+
+    -- ANY_REAL: OK = REAL/LREAL、NG = INT
+    it "ANY_REAL accepts REAL" $ do
+      let srcs = ["PROGRAM P\nVAR r: REAL; y: INT; END_VAR\ny := ID_ANY_REAL(r);\n"]
+      expectUnitsPassWithMode CodesysLike funsAnyFamilies srcs
+
+    it "ANY_REAL rejects INT" $ do
+      let srcs = ["PROGRAM P\nVAR i: INT; y: INT; END_VAR\ny := ID_ANY_REAL(i);\n"]
+      expectUnitsFailWithDetailWithMode @ArgTypeMismatch
+        CodesysLike
+        funsAnyFamilies
+        srcs
+        (\(ArgTypeMismatch fname _ _ _ _ _) -> fname == "ID_ANY_REAL")
+
+    -- ANY_BIT: OK = BOOL/WORD…、NG = INT
+    it "ANY_BIT accepts BOOL" $ do
+      let srcs = ["PROGRAM P\nVAR b: BOOL; y: INT; END_VAR\ny := ID_ANY_BIT(b);\n"]
+      expectUnitsPassWithMode CodesysLike funsAnyFamilies srcs
+
+    it "ANY_BIT rejects INT" $ do
+      let srcs = ["PROGRAM P\nVAR i: INT; y: INT; END_VAR\ny := ID_ANY_BIT(i);\n"]
+      expectUnitsFailWithDetailWithMode @ArgTypeMismatch
+        CodesysLike
+        funsAnyFamilies
+        srcs
+        (\(ArgTypeMismatch fname _ _ _ _ _) -> fname == "ID_ANY_BIT")
+
+    -- ANY_STRING: OK = STRING/WSTRING/CHAR/WCHAR、NG = INT
+    it "ANY_STRING accepts STRING" $ do
+      let srcs = ["PROGRAM P\nVAR s: STRING[10]; y: INT; END_VAR\ny := ID_ANY_STRING(s);\n"]
+      expectUnitsPassWithMode CodesysLike funsAnyFamilies srcs
+
+    it "ANY_STRING rejects INT" $ do
+      let srcs = ["PROGRAM P\nVAR i: INT; y: INT; END_VAR\ny := ID_ANY_STRING(i);\n"]
+      expectUnitsFailWithDetailWithMode @ArgTypeMismatch
+        CodesysLike
+        funsAnyFamilies
+        srcs
+        (\(ArgTypeMismatch fname _ _ _ _ _) -> fname == "ID_ANY_STRING")
+
+    -- ANY_DATE: OK = DATE/TOD/DT、NG = TIME
+    it "ANY_DATE accepts DATE" $ do
+      let srcs = ["PROGRAM P\nVAR d: DATE; y: INT; END_VAR\ny := ID_ANY_DATE(d);\n"]
+      expectUnitsPassWithMode CodesysLike funsAnyFamilies srcs
+
+    it "ANY_DATE rejects TIME" $ do
+      let srcs = ["PROGRAM P\nVAR t: TIME; y: INT; END_VAR\ny := ID_ANY_DATE(t);\n"]
+      expectUnitsFailWithDetailWithMode @ArgTypeMismatch
+        CodesysLike
+        funsAnyFamilies
+        srcs
+        (\(ArgTypeMismatch fname _ _ _ _ _) -> fname == "ID_ANY_DATE")
+
+    -- ANY_DURATION: OK = TIME、NG = DATE
+    it "ANY_DURATION accepts TIME" $ do
+      let srcs = ["PROGRAM P\nVAR t: TIME; y: INT; END_VAR\ny := ID_ANY_DURATION(t);\n"]
+      expectUnitsPassWithMode CodesysLike funsAnyFamilies srcs
+
+    it "ANY_DURATION rejects DATE" $ do
+      let srcs = ["PROGRAM P\nVAR d: DATE; y: INT; END_VAR\ny := ID_ANY_DURATION(d);\n"]
+      expectUnitsFailWithDetailWithMode @ArgTypeMismatch
+        CodesysLike
+        funsAnyFamilies
+        srcs
+        (\(ArgTypeMismatch fname _ _ _ _ _) -> fname == "ID_ANY_DURATION")
