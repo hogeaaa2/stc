@@ -10,6 +10,8 @@ module ST.Semantic
     elaborateUnitWithDecls,
     elaborateUnitsWithDecls,
     elaborateUnitsWithMode,
+    typeEnvFromUnits,
+    funcEnvFromUnits,
     nominalEq,
     FuncEnv,
     FuncSig (..),

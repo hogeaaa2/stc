@@ -29,7 +29,6 @@ library
       ST.Parser
       ST.Semantic
   other-modules:
-      ST.FFI
   autogen-modules:
   hs-source-dirs:
       src
@@ -100,4 +99,5 @@ foreign-library stc-ffi
     , text
     , vary
     , scientific
+    , aeson
   default-language: Haskell2010
