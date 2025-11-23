@@ -9,5 +9,5 @@ cradle:
     - path: "./test/SemanticSpec.hs"
       component: "stc:test:s"
 
-    - path: "./src"
+    - path: "./ffi"
       component: "stc:lib:stc-ffi"
