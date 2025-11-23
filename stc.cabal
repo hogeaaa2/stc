@@ -84,12 +84,9 @@ foreign-library stc-ffi
   if os(windows)
     options: standalone
   mod-def-file:     exports.def
-  hs-source-dirs:   src
+  hs-source-dirs:   ffi
   other-modules:
     ST.FFI
-    ST.AST
-    ST.Parser
-    ST.Semantic
   build-depends:
       base >=4.7 && <5
     , bytestring
@@ -100,4 +97,5 @@ foreign-library stc-ffi
     , vary
     , scientific
     , aeson
+    , stc
   default-language: Haskell2010
