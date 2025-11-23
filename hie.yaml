@@ -10,4 +10,4 @@ cradle:
       component: "stc:test:s"
 
     - path: "./ffi"
-      component: "stc:lib:stc-ffi"
+      component: "stc:lib"
