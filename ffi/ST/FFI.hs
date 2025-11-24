@@ -2,10 +2,10 @@
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE ForeignFunctionInterface #-}
+{-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RecordWildCards #-}
 {-# LANGUAGE ScopedTypeVariables #-}
-{-# LANGUAGE TypeApplications #-}
 
 module ST.FFI (parseST, freeInPtr) where
 
@@ -16,35 +16,61 @@ import Data.ByteString.Lazy qualified as BL
 import Data.Map.Strict qualified as M
 import Data.Text (Text)
 import Data.Text qualified as T
-import Data.Text.Encoding qualified as TE
+import Data.Void (Void)
+import Data.Word (Word8)
 import Foreign.C.String
   ( CString,
     newCString,
-    peekCString
   )
-import Foreign.C.Types (CInt (..))
+import Foreign.C.Types (CSize (..))
 import Foreign.Marshal.Alloc (free)
+import Foreign.Ptr (Ptr, castPtr)
 import GHC.Generics (Generic)
-import ST.AST
 import ST.Parser (parseUnits)
 import ST.Semantic
   ( AllErrs,
-    FuncEnv,
-    SemMode (CodesysLike),
-    elaborateUnitsWithDecls,
-    funcEnvFromUnits,
-    typeEnvFromUnits,
+    elaborateUnits,
   )
-import Text.Megaparsec qualified as MP
+import Text.Megaparsec
+import Vary qualified as V
 import Vary.VEither (VEither (VLeft, VRight))
+
+type OneSemErr = V.Vary AllErrs
 
 -- 総合結果
 data ParseResult = ParseResult
   { ok :: Bool,
-    ast :: Maybe Units, -- 成功時は Just
-    errors :: [Text] -- 今は最初の1件のみ格納（B で拡張）
+    ast :: A.Value, -- いまは A.Null 固定（将来: 本格 ToJSON へ）
+    ast_show :: Maybe Text, -- show した AST
+    errors :: [ErrJson] -- ①/②で整形した JSON エラー
   }
   deriving (Show, Generic)
+
+-- 追加の型（簡素なエラー JSON）
+data ErrJson = ErrJson
+  { phase :: Text, -- "input" / "parse" / "semantic"
+    code :: Text, -- "BadJSON" / "ParseError" / "SemanticError"
+    message :: Text -- 人間可読なメッセージ
+  }
+  deriving (Show, Generic)
+
+-- ParseErrorBundle -> [ErrJson]
+parseBundleToErrs :: FilePath -> ParseErrorBundle Text Void -> [ErrJson]
+parseBundleToErrs fp perr =
+  [ ErrJson
+      { phase = "parse",
+        code = "ParseError",
+        message = T.pack fp <> ":\n" <> T.pack (errorBundlePretty perr)
+      }
+  ]
+
+semErrToErr :: OneSemErr -> ErrJson
+semErrToErr e =
+  ErrJson
+    { phase = "semantic",
+      code = "SemanticError",
+      message = tshow e -- 各エラー型に Show が付いていれば Variant も Show 可
+    }
 
 -- C# から渡してもらう 1 ファイルの形
 data FileIn = FileIn
@@ -65,74 +91,78 @@ instance A.ToJSON ParseResult where
   toJSON ParseResult {..} =
     A.object
       [ "ok" A..= ok,
-        "ast" A..= astValue, -- 下で定義
+        "ast" A..= ast,
+        "ast_show" A..= ast_show,
         "errors" A..= errors
       ]
-    where
-      -- Units に ToJSON インスタンスがまだ無いなら、当面は省略 or Null を返す
-      astValue =
-        case ast of
-          Nothing -> A.Null
-          Just _ -> A.Null -- TODO: Units に ToJSON を付けたらここを実体に差し替え
 
-foreign export ccall parseST :: CInt -> CString -> IO CString
-parseST :: CInt -> CString -> IO CString
-parseST cmode cjson = do
-  -- 入力 CString→String（UTF-8想定）→ByteString
-  inStr <- peekCString cjson
-  let bs = BS8.pack inStr
+instance A.ToJSON ErrJson where
+  toJSON ErrJson {..} =
+    A.object
+      [ "phase" A..= phase,
+        "code" A..= code,
+        "message" A..= message
+      ]
 
-  -- JSON をパース
+foreign export ccall parseST :: Ptr Word8 -> CSize -> IO CString
+
+parseST :: Ptr Word8 -> CSize -> IO CString
+parseST p len = do
+  bs <- BS.packCStringLen (castPtr p, fromIntegral len)
+
+  -- 入力 JSON の decode
   case A.eitherDecodeStrict' bs :: Either String [FileIn] of
-    Left err -> do
-      let msg = T.pack ("Bad JSON for files: " <> err)
-          pr = ParseResult {ok = False, ast = Nothing, errors = [msg]}
-          out = A.encode pr
-      newCString (BS8.unpack (BL.toStrict out))
+    Left bad ->
+      retJSON $
+        ParseResult
+          { ok = False,
+            ast = A.Null,
+            ast_show = Nothing,
+            errors = [ErrJson {phase = "input", code = "BadJSON", message = T.pack bad}]
+          }
     Right fins -> do
       let files = [(path f, content f) | f <- fins]
-      res <- parseAndElaborateProject CodesysLike M.empty files
-      let out = A.encode res
-      newCString (BS8.unpack (BL.toStrict out))
+
+      case parseUnits files of
+        Left (!fp, !perr) ->
+          retJSON $
+            ParseResult
+              { ok = False,
+                ast = A.Null,
+                ast_show = Nothing,
+                errors = parseBundleToErrs fp perr
+              }
+        -- Access Violation回避のため、パース結果はまず完全評価してから次工程へ
+        Right !us -> do
+          let baseFenv = M.empty
+          case elaborateUnits baseFenv us of
+            VLeft !e ->
+              retJSON $
+                ParseResult
+                  { ok = False,
+                    ast = A.Null,
+                    ast_show = Nothing,
+                    errors = [semErrToErr e]
+                  }
+            VRight !us' ->
+              retJSON $
+                ParseResult
+                  { ok = True,
+                    ast = A.Null,
+                    ast_show = Just $ T.pack (show us'),
+                    errors = []
+                  }
 
 -- | 返却した CString の解放用（C# から必ず呼ぶ）
 foreign export ccall freeInPtr :: CString -> IO ()
+
 freeInPtr :: CString -> IO ()
 freeInPtr = free
 
 tshow :: (Show a) => a -> T.Text
 tshow = T.pack . show
 
-elaborateAllCollect ::
-  SemMode ->
-  FuncEnv ->
-  Units ->
-  IO ParseResult
-elaborateAllCollect mode baseFenv us = pure $
-  case typeEnvFromUnits @AllErrs us of
-    VLeft e -> ParseResult {ok = False, ast = Nothing, errors = [tshow e]}
-    VRight tenv ->
-      case funcEnvFromUnits @AllErrs tenv baseFenv us of
-        VLeft e -> ParseResult {ok = False, ast = Nothing, errors = [tshow e]}
-        VRight fenv ->
-          case elaborateUnitsWithDecls tenv fenv us of
-            VLeft e -> ParseResult {ok = False, ast = Nothing, errors = [tshow e]}
-            VRight us' -> ParseResult {ok = True, ast = Just us', errors = []}
-
-parseAndElaborateProject ::
-  SemMode ->
-  FuncEnv ->
-  [(FilePath, Text)] ->
-  IO ParseResult
-parseAndElaborateProject mode baseFenv files =
-  case parseUnits files of
-    Left (fp, perr) -> do
-      let msg = T.pack fp <> ":\n" <> T.pack (MP.errorBundlePretty perr)
-      pure
-        ParseResult
-          { ok = False,
-            ast = Nothing,
-            errors = [msg]
-          }
-    Right us ->
-      elaborateAllCollect mode baseFenv us
+retJSON :: (A.ToJSON a) => a -> IO CString
+retJSON pr = do
+  let lbs = A.encode pr
+  newCString (BS8.unpack (BL.toStrict lbs))
