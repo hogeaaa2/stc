@@ -57,4 +57,56 @@ Here's sample code for how to use this dll
                 hs_exit();
             }
         }
-    
+```
+
+Output:
+
+```
+Initializing runtime...
+{"ast":null,"ast_show":"[UProgram (Program {progName = Loc {locSpan = Span {spanStart = SourcePos {sourceName = \"a.st\", sourceLine = Pos 1, sourceColumn = Pos 9}, spanEnd = SourcePos {sourceName = \"a.st\", sourceLine = Pos 2, sourceColumn = Pos 1}}, locVal = \"P\"}, progVarDecls = VarDecls [Variable {varName = Loc {locSpan = Span {spanStart = SourcePos {sourceName = \"a.st\", sourceLine = Pos 2, sourceColumn = Pos 5}, spanEnd = SourcePos {sourceName = \"a.st\", sourceLine = Pos 2, sourceColumn = Pos 6}}, locVal = \"x\"}, varType = INT, varInit = Just (EINT 0), varKind = VKLocal, varConst = False, varRetain = False}], progBody = [Skip]}),UType [TypeDecl {typeName = Loc {locSpan = Span {spanStart = SourcePos {sourceName = \"b.st\", sourceLine = Pos 1, sourceColumn = Pos 6}, spanEnd = SourcePos {sourceName = \"b.st\", sourceLine = Pos 1, sourceColumn = Pos 12}}, locVal = \"MyInt\"}, typeBody = INT}]]","errors":[],"ok":true}
+Exiting runtime...
+```
+
+Pretty-printed "ast_show" :
+
+```haskell
+[ UProgram
+    ( Program
+        { progName = Loc
+            { locSpan = Span
+                { spanStart = SourcePos
+                    { sourceName = "a.st", sourceLine = Pos 1, sourceColumn = Pos 9
+                    }, spanEnd = SourcePos
+                    { sourceName = "a.st", sourceLine = Pos 2, sourceColumn = Pos 1
+                    }
+                }, locVal = "P"
+            }, progVarDecls = VarDecls
+            [ Variable
+                { varName = Loc
+                    { locSpan = Span
+                        { spanStart = SourcePos
+                            { sourceName = "a.st", sourceLine = Pos 2, sourceColumn = Pos 5
+                            }, spanEnd = SourcePos
+                            { sourceName = "a.st", sourceLine = Pos 2, sourceColumn = Pos 6
+                            }
+                        }, locVal = "x"
+                    }, varType = INT, varInit = Just
+                    ( EINT 0 ), varKind = VKLocal, varConst = False, varRetain = False
+                }
+            ], progBody = [ Skip ]
+        }
+    ), UType
+    [ TypeDecl
+        { typeName = Loc
+            { locSpan = Span
+                { spanStart = SourcePos
+                    { sourceName = "b.st", sourceLine = Pos 1, sourceColumn = Pos 6
+                    }, spanEnd = SourcePos
+                    { sourceName = "b.st", sourceLine = Pos 1, sourceColumn = Pos 12
+                    }
+                }, locVal = "MyInt"
+            }, typeBody = INT
+        }
+    ]
+]
+```
