@@ -58,6 +58,7 @@ module ST.Semantic
     AssignToInput (..),
     InOutArgNotLValue (..),
     FBNotInstantiated (..),
+    FBUsedAsExpr (..),
   )
 where
 
@@ -242,6 +243,8 @@ data InOutArgNotLValue = InOutArgNotLValue FilePath POUName VariableName derivin
 
 data FBNotInstantiated = FBNotInstantiated POUName Span deriving (Eq, Show)
 
+data FBUsedAsExpr = FBUsedAsExpr POUName Span deriving (Eq, Show)
+
 type AllErrs =
   [ AssignToConst,
     AssignToLoopVar,
@@ -278,7 +281,8 @@ type AllErrs =
     NoReturnValue,
     AssignToInput,
     InOutArgNotLValue,
-    FBNotInstantiated
+    FBNotInstantiated,
+    FBUsedAsExpr
   ]
 
 elaborateUnits ::
@@ -516,7 +520,8 @@ elaborateFunction ::
     NoReturnValue :| e,
     InOutArgNotLValue :| e,
     AssignToInput :| e,
-    FBNotInstantiated :| e
+    FBNotInstantiated :| e,
+    FBUsedAsExpr :| e
   ) =>
   SemMode -> TypeEnv -> FuncEnv -> Function -> VEither e Function
 elaborateFunction mode tenv fenv fn = do
@@ -587,7 +592,21 @@ typeEnvFromUnits us = do
   let allTds = [td | UType tds <- us, td <- tds]
   let tenv0 = typeEnvOf allTds -- 全名をまず登録
   tds' <- traverse (\(TypeDecl n t) -> TypeDecl n <$> resolveType tenv0 t) allTds
-  pure (typeEnvOf tds')
+  let tenvTypes = typeEnvOf tds'
+      -- 2) FB 名も「型名」として登録（FBMeta）
+      --    既に同名の型がある場合は既存を優先（エラー化したければオプションへ）
+      tenvWithFBs =
+        foldl'
+          ( \m u -> case u of
+              UFunctionBlock fb ->
+                let n = locVal (fbName fb)
+                 in M.insertWith (\_ old -> old) n (FBMeta n) m
+              _ -> m
+          )
+          tenvTypes
+          us
+
+  pure tenvWithFBs
 
 funcEnvFromUnit ::
   ( DuplicateFunction :| e,
@@ -966,7 +985,8 @@ inferType ::
     UnsupportedGenericReturn :| e,
     NoReturnValue :| e,
     InOutArgNotLValue :| e,
-    FBNotInstantiated :| e
+    FBNotInstantiated :| e,
+    FBUsedAsExpr :| e
   ) =>
   Env ->
   Expr ->
@@ -1094,9 +1114,20 @@ inferType env = \case
         fspan = locSpan fn
         tenv = envTypes env
 
+        isFunctionBlockType :: STType -> Bool
+        isFunctionBlockType (FBMeta _) = True
+        isFunctionBlockType _ = False
+
     sig@(FuncSig _ _ fsArgs fsRet) <-
       case M.lookup fname (envFuncs env) of
-        Nothing -> VEither.fromLeft $ UnknownFunction fname fspan
+        Nothing ->
+          -- VarEnv に fb インスタンス（型が FunctionBlock）の識別子がある？
+          case M.lookup fname (envVars env) of
+            Just VarInfo {viType = t}
+              | isFunctionBlockType t ->
+                  VEither.fromLeft $ FBUsedAsExpr fname fspan
+            _ ->
+              VEither.fromLeft $ UnknownFunction fname fspan
         Just sig'
           | fsKind sig' == FKFunctionBlock ->
               -- POU名を式として使っている（インスタンス化してない）
@@ -1370,7 +1401,8 @@ lvalueType ::
     UnsupportedGenericReturn :| e,
     NoReturnValue :| e,
     InOutArgNotLValue :| e,
-    FBNotInstantiated :| e
+    FBNotInstantiated :| e,
+    FBUsedAsExpr :| e
   ) =>
   Env ->
   STType ->
@@ -1448,7 +1480,8 @@ elabVar ::
     UnsupportedGenericReturn :| e,
     NoReturnValue :| e,
     InOutArgNotLValue :| e,
-    FBNotInstantiated :| e
+    FBNotInstantiated :| e,
+    FBUsedAsExpr :| e
   ) =>
   Env -> Variable -> VEither e Variable
 elabVar env v =
@@ -1494,7 +1527,8 @@ checkExprAssignable ::
     UnsupportedGenericReturn :| e,
     NoReturnValue :| e,
     InOutArgNotLValue :| e,
-    FBNotInstantiated :| e
+    FBNotInstantiated :| e,
+    FBUsedAsExpr :| e
   ) =>
   Env ->
   -- | tgt: 左辺の期待型（宣言型）
@@ -1556,7 +1590,8 @@ checkArrayAggInit ::
     UnsupportedGenericReturn :| e,
     NoReturnValue :| e,
     InOutArgNotLValue :| e,
-    FBNotInstantiated :| e
+    FBNotInstantiated :| e,
+    FBUsedAsExpr :| e
   ) =>
   Env ->
   Identifier -> -- 変数名（診断用）
@@ -1616,7 +1651,8 @@ checkStructAggInit ::
     UnsupportedGenericReturn :| e,
     NoReturnValue :| e,
     InOutArgNotLValue :| e,
-    FBNotInstantiated :| e
+    FBNotInstantiated :| e,
+    FBUsedAsExpr :| e
   ) =>
   Env ->
   Identifier ->
@@ -1707,7 +1743,8 @@ checkStmt ::
     NoReturnValue :| e,
     InOutArgNotLValue :| e,
     AssignToInput :| e,
-    FBNotInstantiated :| e
+    FBNotInstantiated :| e,
+    FBUsedAsExpr :| e
   ) =>
   Env ->
   Statement ->
@@ -2015,6 +2052,7 @@ nominalEq tenv a b =
             _ -> False
         (STRING _, STRING _) -> True
         (WSTRING _, WSTRING _) -> True
+        (FBMeta n1, FBMeta n2) -> n1 == n2
         _ ->
           case (res a, res b) of
             (VRight r1, VRight r2) -> r1 == r2

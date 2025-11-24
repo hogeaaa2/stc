@@ -2323,9 +2323,30 @@ main = hspec $ do
     it "rejects FB instance variable used like a function (f(...))" $ do
       let prog =
             "PROGRAM P\nVAR x: INT; f: FB; END_VAR\nx := f(a := 1);\n"
-      -- FB は型ではないので、変数宣言の解決時点で UnknownType "FB"
-      expectUnitsFailWithDetailWithMode @UnknownType
+      expectUnitsFailWithDetailWithMode @FBUsedAsExpr
         CodesysLike
         M.empty
         [fb, prog]
-        (\(UnknownType t _) -> t == "FB")
+        (\(FBUsedAsExpr t _) -> t == "f")
+
+  describe "FB as a first-class type (Phase 1)" $ do
+    it "allows declaring a variable of FB type when FB is defined" $ do
+      let fb =
+            "FUNCTION_BLOCK FB\n\
+            \VAR_INPUT a : INT; END_VAR\n\
+            \VAR_OUTPUT o : INT; END_VAR\n\
+            \o := a;\n"
+          prog =
+            "PROGRAM P\n\
+            \VAR f: FB; END_VAR\n"
+      -- 両モードで通る（まだ呼び出しもフィールド参照もしない）
+      expectUnitsPassWithMode Strict M.empty [fb, prog]
+      expectUnitsPassWithMode CodesysLike M.empty [fb, prog]
+
+    it "rejects FB type if FB is not defined" $ do
+      let prog =
+            "PROGRAM P\n\
+            \VAR f: FB; END_VAR\n"
+      -- FB 本体が無いので UnknownType を期待
+      expectUnitsFailWithDetailWithMode @UnknownType Strict M.empty [prog] $
+        \(UnknownType tname _) -> tname == "FB"

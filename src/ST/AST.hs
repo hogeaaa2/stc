@@ -33,6 +33,8 @@ where
 import Data.Text (Text)
 import Text.Megaparsec (SourcePos)
 
+type POUName = Text
+
 data Span = Span
   { spanStart :: SourcePos,
     spanEnd :: SourcePos
@@ -143,6 +145,7 @@ data STType
   | LDATE
   | DT
   | LDT
+  | FBMeta POUName
   deriving (Eq, Show)
 
 data Date = Date
