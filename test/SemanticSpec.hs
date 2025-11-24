@@ -2373,3 +2373,43 @@ main = hspec $ do
         M.empty
         [fb, dut]
         (\(TypeFBNameClash n) -> n == "MyFB")
+
+  describe "FB field read (expression side)" $ do
+    let fb =
+          "FUNCTION_BLOCK FB\n\
+          \VAR_INPUT  a : INT;  END_VAR\n\
+          \VAR_OUTPUT o : INT;  END_VAR\n\
+          \VAR_IN_OUT r : INT;  END_VAR\n\
+          \o := a;\n"
+
+    it "allows reading VAR_INPUT as f.a" $ do
+      let prog =
+            "PROGRAM P\n\
+            \VAR f: FB; x: INT; END_VAR\n\
+            \x := f.a;\n"
+      expectUnitsPassWithMode CodesysLike M.empty [fb, prog]
+
+    it "allows reading VAR_OUTPUT as f.o" $ do
+      let prog =
+            "PROGRAM P\n\
+            \VAR f: FB; x: INT; END_VAR\n\
+            \x := f.o;\n"
+      expectUnitsPassWithMode CodesysLike M.empty [fb, prog]
+
+    it "allows reading VAR_IN_OUT as f.r" $ do
+      let prog =
+            "PROGRAM P\n\
+            \VAR f: FB; x: INT; END_VAR\n\
+            \x := f.r;\n"
+      expectUnitsPassWithMode CodesysLike M.empty [fb, prog]
+
+    it "rejects unknown FB field" $ do
+      let prog =
+            "PROGRAM P\n\
+            \VAR f: FB; x: INT; END_VAR\n\
+            \x := f.zz;\n"
+      expectUnitsFailWithDetailWithMode @UnknownFBMember
+        CodesysLike
+        M.empty
+        [fb, prog]
+        (\(UnknownFBMember fbName mem _) -> fbName == "FB" && mem == "zz")

@@ -60,6 +60,7 @@ module ST.Semantic
     FBNotInstantiated (..),
     FBUsedAsExpr (..),
     TypeFBNameClash (..),
+    UnknownFBMember (..),
   )
 where
 
@@ -248,6 +249,8 @@ data FBUsedAsExpr = FBUsedAsExpr POUName Span deriving (Eq, Show)
 
 newtype TypeFBNameClash = TypeFBNameClash Text deriving (Eq, Show)
 
+data UnknownFBMember = UnknownFBMember VariableName MemberName Span deriving (Eq, Show)
+
 type AllErrs =
   [ AssignToConst,
     AssignToLoopVar,
@@ -286,7 +289,8 @@ type AllErrs =
     InOutArgNotLValue,
     FBNotInstantiated,
     FBUsedAsExpr,
-    TypeFBNameClash
+    TypeFBNameClash,
+    UnknownFBMember
   ]
 
 elaborateUnits ::
@@ -525,7 +529,9 @@ elaborateFunction ::
     InOutArgNotLValue :| e,
     AssignToInput :| e,
     FBNotInstantiated :| e,
-    FBUsedAsExpr :| e
+    FBUsedAsExpr :| e,
+    InternalError :| e,
+    UnknownFBMember :| e
   ) =>
   SemMode -> TypeEnv -> FuncEnv -> Function -> VEither e Function
 elaborateFunction mode tenv fenv fn = do
@@ -1005,7 +1011,9 @@ inferType ::
     NoReturnValue :| e,
     InOutArgNotLValue :| e,
     FBNotInstantiated :| e,
-    FBUsedAsExpr :| e
+    FBUsedAsExpr :| e,
+    InternalError :| e,
+    UnknownFBMember :| e
   ) =>
   Env ->
   Expr ->
@@ -1067,7 +1075,7 @@ inferType env = \case
     EVar vId ->
       case M.lookup (locVal vId) (envVars env) of
         -- 変数が見つかる → 構造体アクセスとして扱う
-        Just _ -> goStruct fld e
+        Just _ -> inferMemberAccess fld e
         Nothing ->
           -- 変数ではなかったので“型名か？”を判定
           case resolveType @e (envTypes env) (Named vId) of
@@ -1079,7 +1087,7 @@ inferType env = \case
             -- 型にも無い → ここは“値としても無い”ので UnknownVar にする
             _ -> VEither.fromLeft $ UnknownVar (locVal vId) (locSpan vId)
     -- それ以外は通常の構造体アクセス解決
-    _ -> goStruct fld e
+    _ -> inferMemberAccess fld e
   EIndex arr idxs -> do
     tBase <- inferType env arr
     tRes <- resolveType (envTypes env) tBase
@@ -1283,14 +1291,26 @@ inferType env = \case
         "<>" -> eqLike ta tb
         _ -> ordLike ta tb
 
-    goStruct fld base = do
+    inferMemberAccess :: Identifier -> Expr -> VEither e STType
+    inferMemberAccess fld base = do
       tr <- inferType env base
-      case resolveType @e (envTypes env) tr of
+      let tenv = envTypes env
+      case resolveType @e tenv tr of
         VRight (Struct fs) ->
           case lookup (locVal fld) [(locVal n, t) | (n, t) <- fs] of
             Just t -> VRight t
             Nothing -> VEither.fromLeft $ UnknownStructMember tr (locVal fld) (locSpan fld)
-        -- 構造体以外に .field は不可
+        VRight (FBMeta fbName) -> do
+          case M.lookup fbName (envFuncs env) of
+            Just FuncSig {fsKind = FKFunctionBlock, fsArgs = argMap} ->
+              case M.lookup (locVal fld) argMap of
+                Just ParamInfo {piType = sigTy} ->
+                  maybe
+                    (VEither.fromLeft $ InternalError "FB member is generic")
+                    VRight
+                    (sigTyToSTType sigTy)
+                Nothing -> VEither.fromLeft $ UnknownFBMember fbName (locVal fld) (locSpan fld)
+            _ -> VEither.fromLeft $ InternalError ("FB meta not found: " <> fbName)
         _ -> VEither.fromLeft $ NotAStruct (locSpan fld) tr
 
     resolvePrim :: TypeEnv -> STType -> STType
@@ -1421,7 +1441,9 @@ lvalueType ::
     NoReturnValue :| e,
     InOutArgNotLValue :| e,
     FBNotInstantiated :| e,
-    FBUsedAsExpr :| e
+    FBUsedAsExpr :| e,
+    InternalError :| e,
+    UnknownFBMember :| e
   ) =>
   Env ->
   STType ->
@@ -1500,7 +1522,9 @@ elabVar ::
     NoReturnValue :| e,
     InOutArgNotLValue :| e,
     FBNotInstantiated :| e,
-    FBUsedAsExpr :| e
+    FBUsedAsExpr :| e,
+    InternalError :| e,
+    UnknownFBMember :| e
   ) =>
   Env -> Variable -> VEither e Variable
 elabVar env v =
@@ -1547,7 +1571,9 @@ checkExprAssignable ::
     NoReturnValue :| e,
     InOutArgNotLValue :| e,
     FBNotInstantiated :| e,
-    FBUsedAsExpr :| e
+    FBUsedAsExpr :| e,
+    InternalError :| e,
+    UnknownFBMember :| e
   ) =>
   Env ->
   -- | tgt: 左辺の期待型（宣言型）
@@ -1610,7 +1636,9 @@ checkArrayAggInit ::
     NoReturnValue :| e,
     InOutArgNotLValue :| e,
     FBNotInstantiated :| e,
-    FBUsedAsExpr :| e
+    FBUsedAsExpr :| e,
+    InternalError :| e,
+    UnknownFBMember :| e
   ) =>
   Env ->
   Identifier -> -- 変数名（診断用）
@@ -1671,7 +1699,9 @@ checkStructAggInit ::
     NoReturnValue :| e,
     InOutArgNotLValue :| e,
     FBNotInstantiated :| e,
-    FBUsedAsExpr :| e
+    FBUsedAsExpr :| e,
+    InternalError :| e,
+    UnknownFBMember :| e
   ) =>
   Env ->
   Identifier ->
@@ -1763,7 +1793,9 @@ checkStmt ::
     InOutArgNotLValue :| e,
     AssignToInput :| e,
     FBNotInstantiated :| e,
-    FBUsedAsExpr :| e
+    FBUsedAsExpr :| e,
+    InternalError :| e,
+    UnknownFBMember :| e
   ) =>
   Env ->
   Statement ->
@@ -2286,3 +2318,8 @@ inputParamOrder =
     . filter (\(_, p) -> piDir p /= ParamOut)
     . M.toList
     . fsArgs
+
+sigTyToSTType :: SigTy -> Maybe STType
+sigTyToSTType = \case
+  SigMono t -> Just t
+  _ -> Nothing
