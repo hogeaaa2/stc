@@ -57,6 +57,7 @@ module ST.Semantic
     NoReturnValue (..),
     AssignToInput (..),
     InOutArgNotLValue (..),
+    FBNotInstantiated (..),
   )
 where
 
@@ -239,6 +240,8 @@ data AssignToInput = AssignToInput FilePath VariableName deriving (Eq, Show)
 
 data InOutArgNotLValue = InOutArgNotLValue FilePath POUName VariableName deriving (Eq, Show)
 
+data FBNotInstantiated = FBNotInstantiated POUName Span deriving (Eq, Show)
+
 type AllErrs =
   [ AssignToConst,
     AssignToLoopVar,
@@ -274,7 +277,8 @@ type AllErrs =
     UnsupportedGenericReturn,
     NoReturnValue,
     AssignToInput,
-    InOutArgNotLValue
+    InOutArgNotLValue,
+    FBNotInstantiated
   ]
 
 elaborateUnits ::
@@ -353,7 +357,85 @@ elaborateUnit mode tenv fenv = \case
 -- TODO 実装する
 elaborateFunctionBlock ::
   SemMode -> TypeEnv -> FuncEnv -> FunctionBlock -> VEither AllErrs FunctionBlock
-elaborateFunctionBlock = undefined
+elaborateFunctionBlock mode tenv fenv (FunctionBlock fname vds body) = do
+  -- 1) 型解決済み VarDecls へ
+  VarDecls vs0 <- resolveVarTypes tenv vds
+
+  -- 2) VarEnv 構築（重複チェック込み）
+  venv <- foldM insertVar M.empty vs0
+
+  let env =
+        Env
+          { envTypes = tenv,
+            envVars = venv,
+            envFuncs = fenv,
+            envMode = mode
+          }
+
+  -- 3) 既定初期化の付与（CONST 未初期化などの検査もここ）
+  vs1 <- traverse (elabVar env) vs0
+
+  -- 4) Strict ルール:
+  case mode of
+    Strict -> do
+      -- 4-a) VAR_INPUT への代入禁止
+      let inputs = [locVal (varName v) | v <- vs1, varKind v == VKInput]
+          wroteInput =
+            [ x
+            | x <- inputs,
+              any (stmtAssignsTo x) body
+            ]
+      case wroteInput of
+        (bad : _) -> VEither.fromLeft (AssignToInput (sourceNameOf fname) bad)
+        [] -> pure ()
+
+      -- 4-b) VAR_OUTPUT は全経路で代入必須（FUNCTION と同じノリ）
+      let outs = Set.fromList [locVal (varName v) | v <- vs1, varKind v == VKOutput]
+      unless (Set.null outs || mustAssignAll outs body) $
+        -- 既存のエラー型を流用。FB 用の専用名が欲しければ別途定義して差し替えてOK
+        VEither.fromLeft (MissingReturn (locVal fname))
+    CodesysLike -> pure () -- INPUT 書き込みは許容、OUT 全経路チェックもしない
+
+  -- 5) 本文の型チェック／検査（あるなら実行。無ければそのまま返す）
+  -- 既に elabStmt / elabStmts があるなら有効化して:
+  -- body' <- traverse (elabStmt env) body
+  -- pure $ FunctionBlock fname (VarDecls vs1) body'
+  pure $ FunctionBlock fname (VarDecls vs1) body
+  where
+    stmtAssignsTo :: Text -> Statement -> Bool
+    stmtAssignsTo fname' = \case
+      Assign lv _ ->
+        lvalueWritesTo fname' lv
+      If _ th elsifs els ->
+        any (stmtAssignsTo fname') th
+          || any (any (stmtAssignsTo fname') . snd) elsifs
+          || any (stmtAssignsTo fname') els
+      While _ body' ->
+        any (stmtAssignsTo fname') body'
+      Repeat body' _ ->
+        any (stmtAssignsTo fname') body'
+      Case _ arms els ->
+        any (caseArmAssignsTo fname') arms
+          || any (stmtAssignsTo fname') els
+      For _ _ _ _ body' ->
+        any (stmtAssignsTo fname') body'
+      Skip ->
+        False
+
+    lvalueWritesTo :: Text -> LValue -> Bool
+    lvalueWritesTo fname' = \case
+      -- 関数名そのものへの代入:
+      LVar ident ->
+        locVal ident == fname'
+      -- 配列 / フィールド / ネストしていても、最終的な「ベース変数」が関数名なら return 扱い:
+      LIndex lv _ ->
+        lvalueWritesTo fname' lv
+      LField lv _ ->
+        lvalueWritesTo fname' lv
+
+    caseArmAssignsTo :: Text -> CaseArm -> Bool
+    caseArmAssignsTo fname' (CaseArm _ stmts) =
+      any (stmtAssignsTo fname') stmts
 
 -- 旧 elaborateUnit 本体を Program 単位に切り出したもの
 elaborateProgram ::
@@ -433,7 +515,8 @@ elaborateFunction ::
     UnknownType :| e,
     NoReturnValue :| e,
     InOutArgNotLValue :| e,
-    AssignToInput :| e
+    AssignToInput :| e,
+    FBNotInstantiated :| e
   ) =>
   SemMode -> TypeEnv -> FuncEnv -> Function -> VEither e Function
 elaborateFunction mode tenv fenv fn = do
@@ -613,7 +696,7 @@ collectPOUParams tenv (VarDecls vs) =
     case varKind v of
       VKInput -> Just <$> mk ParamIn v
       VKInOut -> Just <$> mk ParamInOut v
-      -- VKOutputは文法上、関数の入力引数とは別なのでここでは扱わない
+      VKOutput -> Just <$> mk ParamOut v
       _ -> pure Nothing
   where
     mk :: ParamDirKind -> Variable -> VEither e ParamSig
@@ -882,7 +965,8 @@ inferType ::
     BadArgCount :| e,
     UnsupportedGenericReturn :| e,
     NoReturnValue :| e,
-    InOutArgNotLValue :| e
+    InOutArgNotLValue :| e,
+    FBNotInstantiated :| e
   ) =>
   Env ->
   Expr ->
@@ -1013,10 +1097,11 @@ inferType env = \case
     sig@(FuncSig _ _ fsArgs fsRet) <-
       case M.lookup fname (envFuncs env) of
         Nothing -> VEither.fromLeft $ UnknownFunction fname fspan
+        Just sig'
+          | fsKind sig' == FKFunctionBlock ->
+              -- POU名を式として使っている（インスタンス化してない）
+              VEither.fromLeft $ FBNotInstantiated fname fspan
         Just sig' -> pure sig'
-
-    -- let paramCount = length fsArgs
-    -- nameToIx = M.fromList (zip (map fst fsArgs) [0 ..])
 
     -- 名前付き/位置引数を正規化して、param順のリストに
     orderedArgs <- assignArgs fname sig args
@@ -1284,7 +1369,8 @@ lvalueType ::
     BadArgCount :| e,
     UnsupportedGenericReturn :| e,
     NoReturnValue :| e,
-    InOutArgNotLValue :| e
+    InOutArgNotLValue :| e,
+    FBNotInstantiated :| e
   ) =>
   Env ->
   STType ->
@@ -1361,7 +1447,8 @@ elabVar ::
     BadArgCount :| e,
     UnsupportedGenericReturn :| e,
     NoReturnValue :| e,
-    InOutArgNotLValue :| e
+    InOutArgNotLValue :| e,
+    FBNotInstantiated :| e
   ) =>
   Env -> Variable -> VEither e Variable
 elabVar env v =
@@ -1406,7 +1493,8 @@ checkExprAssignable ::
     BadArgCount :| e,
     UnsupportedGenericReturn :| e,
     NoReturnValue :| e,
-    InOutArgNotLValue :| e
+    InOutArgNotLValue :| e,
+    FBNotInstantiated :| e
   ) =>
   Env ->
   -- | tgt: 左辺の期待型（宣言型）
@@ -1467,7 +1555,8 @@ checkArrayAggInit ::
     BadArgCount :| e,
     UnsupportedGenericReturn :| e,
     NoReturnValue :| e,
-    InOutArgNotLValue :| e
+    InOutArgNotLValue :| e,
+    FBNotInstantiated :| e
   ) =>
   Env ->
   Identifier -> -- 変数名（診断用）
@@ -1526,7 +1615,8 @@ checkStructAggInit ::
     BadArgCount :| e,
     UnsupportedGenericReturn :| e,
     NoReturnValue :| e,
-    InOutArgNotLValue :| e
+    InOutArgNotLValue :| e,
+    FBNotInstantiated :| e
   ) =>
   Env ->
   Identifier ->
@@ -1616,7 +1706,8 @@ checkStmt ::
     UnsupportedGenericReturn :| e,
     NoReturnValue :| e,
     InOutArgNotLValue :| e,
-    AssignToInput :| e
+    AssignToInput :| e,
+    FBNotInstantiated :| e
   ) =>
   Env ->
   Statement ->

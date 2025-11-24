@@ -2302,3 +2302,30 @@ main = hspec $ do
       runNG @BadArgCount
         [funF, prog]
         (\(BadArgCount fname _ expected actual) -> fname == "F" && expected == 3 && actual == 4)
+
+  describe "FB misuse as expression" $ do
+    let fb =
+          "FUNCTION_BLOCK FB\n\
+          \VAR_INPUT a : INT; END_VAR\n\
+          \VAR_OUTPUT o : INT; END_VAR\n\
+          \o := a;\n"
+
+    it "rejects FB POU name used as expression call (FB(...))" $ do
+      let prog =
+            "PROGRAM P\nVAR x: INT; END_VAR\nx := FB(a := 1);\n"
+      -- ここは「未インスタンス」エラーに期待を変更
+      expectUnitsFailWithDetailWithMode @FBNotInstantiated
+        CodesysLike
+        M.empty
+        [fb, prog]
+        (\(FBNotInstantiated n _) -> n == "FB")
+
+    it "rejects FB instance variable used like a function (f(...))" $ do
+      let prog =
+            "PROGRAM P\nVAR x: INT; f: FB; END_VAR\nx := f(a := 1);\n"
+      -- FB は型ではないので、変数宣言の解決時点で UnknownType "FB"
+      expectUnitsFailWithDetailWithMode @UnknownType
+        CodesysLike
+        M.empty
+        [fb, prog]
+        (\(UnknownType t _) -> t == "FB")

@@ -74,7 +74,7 @@
    * すべて `Span` 付与済みか確認（`UnknownFunction`/`ArgTypeMismatch`/…）。
    * `ArgTypeMismatch` の expected に家族代表（`repForGST`）を使う等、読みやすさ改善。
 
-6. **（先取りの安全策）FBを式に使った誤用の専用エラー**
+6. ✅ **（先取りの安全策）FBを式に使った誤用の専用エラー**
 
    * いまは `UnknownFunction`→`NoReturnValue` になりがち。
      VarEnv に FB インスタンスが見つかったら `FBUsedAsExpr` を返すプリチェックを `inferType ECall` 頭に入れておく。
