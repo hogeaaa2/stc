@@ -79,9 +79,46 @@
    * いまは `UnknownFunction`→`NoReturnValue` になりがち。
      VarEnv に FB インスタンスが見つかったら `FBUsedAsExpr` を返すプリチェックを `inferType ECall` 頭に入れておく。
 
-7. **（中期）FB 本体/実行モデル**
+7. (in progress) **（中期）FB 本体/実行モデル**
 
    * 文としての呼び出しノード（例：`FBInvoke`）の追加、入出力の意味論（後ろ倒しでOK）。
+
+
+いいね、ここからは **「FB 本体／実行モデル」** を“コンパイラ的に破綻しない最小構成→拡張しやすい”順で固めよう。下はそのまま差し込める **最小パッチ案＋段階計画**。まずは“静的意味付け”と“IRの受け皿”を用意して、ランタイム挙動（状態遷移）をあとから載せられる形にする。
+
+---
+
+  # 進め方（段階計画）
+
+  1. ✅ **型系と環境の土台を作る（FB を第一級の“型メタ”として扱う）**
+
+    * `TypeEnv` に FB 名を登録できるように、`STType` に **FB メタ型**を追加。
+    * これで `f : FB` みたいな変数宣言が **UnknownType にならず**通る。
+    * 名目同値・フィールド参照（`f.o` 読み）時の型解決フックもここで整備。
+
+  2. **FB 呼び出しを“文”として表現する**
+
+    * `Statement` に **`CallFB`** を追加（`ECall` は引き続き FUNCTION 用）。
+    * 右記の専用引数 `FBArg`（`in :=` / `out =>` / `inout :=`）で“方向”を保持。
+    * 既存の `collectPOUParams` を **FB でも流用**（`VKOutput` を ParamOut に含める方針で OK）。
+
+  3. **静的検査（elaborate）**
+
+    * `CallFB` の型検査：
+
+      * ① 対象 `LValue` が **FB メタ型**のインスタンスか確認
+      * ② `assignArgs` の FB 版（“名前付きのみ”＋方向一致＋`IN_OUT` は LValue 必須）
+      * ③ 型適合（`assignCoerce` / `gstMember` など既存ロジックを流用）
+
+  4. **IR（将来の実行モデル）に落とす足場**
+
+    * FB を **`fb_step_FBNAME : State × Inputs -> (State', Outputs)`** に下げる想定で IR ノード（ダミー）を用意。
+    * まずは **“文としての副作用あり呼び出し”を IR に載せる**だけ（実際の実行は後続タスク）。
+
+  5. **フィールドアクセスの最小許容**
+
+    * `EField (EVar f) out` の **“読み”**は FB の `VAR_OUTPUT` に限り許可（型は出力の型）。
+    * **外部からの “書き”**（`LField (LVar f) out := ...`）は **エラー**にする（`AssignToFBOutputOutside` など）。
 
 ---
 
