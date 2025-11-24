@@ -59,6 +59,7 @@ module ST.Semantic
     InOutArgNotLValue (..),
     FBNotInstantiated (..),
     FBUsedAsExpr (..),
+    TypeFBNameClash (..),
   )
 where
 
@@ -245,6 +246,8 @@ data FBNotInstantiated = FBNotInstantiated POUName Span deriving (Eq, Show)
 
 data FBUsedAsExpr = FBUsedAsExpr POUName Span deriving (Eq, Show)
 
+newtype TypeFBNameClash = TypeFBNameClash Text deriving (Eq, Show)
+
 type AllErrs =
   [ AssignToConst,
     AssignToLoopVar,
@@ -282,7 +285,8 @@ type AllErrs =
     AssignToInput,
     InOutArgNotLValue,
     FBNotInstantiated,
-    FBUsedAsExpr
+    FBUsedAsExpr,
+    TypeFBNameClash
   ]
 
 elaborateUnits ::
@@ -586,9 +590,24 @@ elaborateFunction mode tenv fenv fn = do
 
 -- 複数 Unit の全 TYPE を一括解決して最終 TypeEnv を返す
 typeEnvFromUnits ::
-  (TypeCycle :| e, UnknownType :| e) =>
+  ( TypeCycle :| e,
+    UnknownType :| e,
+    TypeFBNameClash :| e
+  ) =>
   Units -> VEither e TypeEnv
 typeEnvFromUnits us = do
+  -- A) 衝突検出：DUT 名と FB 名の交差
+  let typeNames =
+        Set.fromList
+          [locVal (typeName td) | UType tds <- us, td <- tds]
+      fbNames =
+        Set.fromList
+          [locVal (fbName fb) | UFunctionBlock fb <- us]
+      clashes = Set.toList (Set.intersection typeNames fbNames)
+  case clashes of
+    n : _ -> VEither.fromLeft $ TypeFBNameClash n
+    [] -> pure ()
+
   let allTds = [td | UType tds <- us, td <- tds]
   let tenv0 = typeEnvOf allTds -- 全名をまず登録
   tds' <- traverse (\(TypeDecl n t) -> TypeDecl n <$> resolveType tenv0 t) allTds

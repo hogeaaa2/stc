@@ -2350,3 +2350,26 @@ main = hspec $ do
       -- FB 本体が無いので UnknownType を期待
       expectUnitsFailWithDetailWithMode @UnknownType Strict M.empty [prog] $
         \(UnknownType tname _) -> tname == "FB"
+
+  describe "FB / TYPE name clash" $ do
+    let fb =
+          "FUNCTION_BLOCK MyFB\n\
+          \VAR_INPUT a : INT; END_VAR\n\
+          \VAR_OUTPUT o : INT; END_VAR\n\
+          \o := a;\n"
+
+        dut =
+          "TYPE MyFB : INT; END_TYPE\n"
+
+    it "rejects when TYPE then FB" $ do
+      expectUnitsFailWithDetailWithMode @TypeFBNameClash
+        Strict
+        M.empty
+        [dut, fb]
+        (\(TypeFBNameClash n) -> n == "MyFB")
+    it "rejects when FB then TYPE" $ do
+      expectUnitsFailWithDetailWithMode @TypeFBNameClash
+        Strict
+        M.empty
+        [fb, dut]
+        (\(TypeFBNameClash n) -> n == "MyFB")
