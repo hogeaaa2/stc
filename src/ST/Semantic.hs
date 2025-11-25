@@ -1302,8 +1302,9 @@ inferType env = \case
             Nothing -> VEither.fromLeft $ UnknownStructMember tr (locVal fld) (locSpan fld)
         VRight (FBMeta fbName) -> do
           case M.lookup fbName (envFuncs env) of
-            Just FuncSig {fsKind = FKFunctionBlock, fsArgs = argMap} ->
-              case M.lookup (locVal fld) argMap of
+            Just FuncSig {fsKind = FKFunctionBlock, fsArgs = argMap} -> do
+              let visible = M.filter (\pi -> piDir pi /= ParamInOut) argMap
+              case M.lookup (locVal fld) visible of
                 Just ParamInfo {piType = sigTy} ->
                   maybe
                     (VEither.fromLeft $ InternalError "FB member is generic")

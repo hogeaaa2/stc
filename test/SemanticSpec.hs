@@ -2396,12 +2396,16 @@ main = hspec $ do
             \x := f.o;\n"
       expectUnitsPassWithMode CodesysLike M.empty [fb, prog]
 
-    it "allows reading VAR_IN_OUT as f.r" $ do
+    it "rejects reading VAR_IN_OUT as f.r" $ do
       let prog =
             "PROGRAM P\n\
             \VAR f: FB; x: INT; END_VAR\n\
             \x := f.r;\n"
-      expectUnitsPassWithMode CodesysLike M.empty [fb, prog]
+      expectUnitsFailWithDetailWithMode @UnknownFBMember
+        CodesysLike
+        M.empty
+        [fb, prog]
+        (\(UnknownFBMember _ ident _) -> ident == "r")
 
     it "rejects unknown FB field" $ do
       let prog =
