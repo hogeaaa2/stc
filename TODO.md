@@ -96,13 +96,13 @@
     * ✅ これで `f : FB` みたいな変数宣言が **UnknownType にならず**通る。
     * ✅ 名目同値・フィールド参照（`f.o` 読み）時の型解決フックもここで整備。
 
-  2. **FB 呼び出しを“文”として表現する**
+  2. ✅ **FB 呼び出しを“文”として表現する**
 
     * ✅ `Statement` に **`CallFB`** を追加（`ECall` は引き続き FUNCTION 用）。
     * ✅ 右記の専用引数 `FBArg`（`in :=` / `out =>` / `inout :=`）で“方向”を保持。
-    * 既存の `collectPOUParams` を **FB でも流用**（`VKOutput` を ParamOut に含める方針で OK）。
+    * ✅ 既存の `collectPOUParams` を **FB でも流用**（`VKOutput` を ParamOut に含める方針で OK）。
 
-  3. **静的検査（elaborate）**
+  3. (in prgress) **静的検査（elaborate）**
 
     * `CallFB` の型検査：
 
@@ -110,15 +110,43 @@
       * ② `assignArgs` の FB 版（“名前付きのみ”＋方向一致＋`IN_OUT` は LValue 必須）
       * ③ 型適合（`assignCoerce` / `gstMember` など既存ロジックを流用）
 
-  4. **IR（将来の実行モデル）に落とす足場**
+    * まだのところ（静的検査で残っている最小セット）
 
-    * FB を **`fb_step_FBNAME : State × Inputs -> (State', Outputs)`** に下げる想定で IR ノード（ダミー）を用意。
-    * まずは **“文としての副作用あり呼び出し”を IR に載せる**だけ（実際の実行は後続タスク）。
+    1. **FB 本体の「出力の必須代入（Strict）」**
 
-  5. **フィールドアクセスの最小許容**
+      * FUNCTION でやったのと同等を **FB にも**入れる。
+      * 具体的には、`FB` 本体に対して
 
-    * `EField (EVar f) out` の **“読み”**は FB の `VAR_OUTPUT` に限り許可（型は出力の型）。
-    * **外部からの “書き”**（`LField (LVar f) out := ...`）は **エラー**にする（`AssignToFBOutputOutside` など）。
+        * `req = {VAR_OUTPUT の全名前}`
+        * `mustAssignAll req fbBody` を Strict で要求、CodesysLike はスキップ（デフォルト初期化で逃がす想定）。
+      * 既存の `lvalueWritesTo` / `stmtAssignsTo` / `caseArmAssignsTo` をそのまま使えます。
+      * エラーは `MissingReturn` と別にするなら、例えば `MissingFBOutputs FBName (Set VarName)` のような型を新設。
+
+    2. **方向不一致の明示的エラー**（任意だが推し）
+
+      * いま `CallOut` で ParamOut 以外だった場合にプレースホルダ的なエラーを返している箇所を、
+        専用エラー（例：`BindDirectionMismatch POU ArgName ExpectedDir ActualDir Span`）に差し替え。
+      * 仕様として **IN_OUT への `=>` は不許可**で OK（Codesys の挙動にも沿う）。
+
+    3. **FB 本体内：VAR_INPUT 書き込み禁止（Strict）**の確認
+
+      * これは既存の「AssignToInput（Strict でNG / CodesysLike OK）」ロジックが **FB 本体にも効く**状態か要確認。
+        もし関数本体だけを対象にしていたら、FB にも同じチェックを掛ける（すぐ入れられます）。
+
+    4. （オプション）**関数名 vs FB名の衝突**のテスト追加
+
+      * 型名 vs FB 名は済。関数名 vs FB 名も一応網羅テストを足しておくと安心。
+
+
+      4. **IR（将来の実行モデル）に落とす足場**
+
+        * FB を **`fb_step_FBNAME : State × Inputs -> (State', Outputs)`** に下げる想定で IR ノード（ダミー）を用意。
+        * まずは **“文としての副作用あり呼び出し”を IR に載せる**だけ（実際の実行は後続タスク）。
+
+      5. **フィールドアクセスの最小許容**
+
+        * `EField (EVar f) out` の **“読み”**は FB の `VAR_OUTPUT` に限り許可（型は出力の型）。
+        * **外部からの “書き”**（`LField (LVar f) out := ...`）は **エラー**にする（`AssignToFBOutputOutside` など）。
 
 ---
 
