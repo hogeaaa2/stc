@@ -998,3 +998,36 @@ main = hspec $ do
                 -- END_FUNCTION_BLOCK is missing
               ]
       runUnit src `shouldSatisfy` isRight
+
+  -- SemanticSpec ではなく parsing 側の Spec で OK
+  describe "FB call statement (parsing only)" $ do
+    let fbDecl =
+          "FUNCTION_BLOCK FB\n\
+          \VAR_INPUT a : INT; END_VAR\n\
+          \VAR_OUTPUT o : INT; END_VAR\n"
+
+    it "parses FB call with one input bind" $ do
+      let prog =
+            "PROGRAM P\n\
+            \VAR f: FB; END_VAR\n\
+            \f(a := 1);\n"
+      case parseUnits' [fbDecl, prog] of
+        Left e -> expectationFailure (show e)
+        Right _ -> pure () -- 形さえ読めればOK
+    it "parses FB call with input and output binding" $ do
+      let prog =
+            "PROGRAM P\n\
+            \VAR f: FB; x: INT; END_VAR\n\
+            \f(a := 1, o => x);\n"
+      case parseUnits' [fbDecl, prog] of
+        Left e -> expectationFailure (show e)
+        Right _ -> pure ()
+
+    it "parses FB call with multiple binds (order free)" $ do
+      let prog =
+            "PROGRAM P\n\
+            \VAR f: FB; x: INT; y: INT; END_VAR\n\
+            \f(o => x, a := 2);\n"
+      case parseUnits' [fbDecl, prog] of
+        Left e -> expectationFailure (show e)
+        Right _ -> pure ()

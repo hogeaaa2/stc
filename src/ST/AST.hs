@@ -27,6 +27,7 @@ module ST.AST
     GSTType (..),
     Function (..),
     FunctionBlock (..),
+    CallBind (..),
   )
 where
 
@@ -242,6 +243,11 @@ data LValue
   | LIndex LValue [Expr]
   deriving (Eq, Show)
 
+data CallBind
+  = CallIn Identifier Expr
+  | CallOut Identifier LValue
+  deriving (Eq, Show)
+
 data Statement
   = Assign LValue Expr
   | If
@@ -254,6 +260,7 @@ data Statement
   | Repeat [Statement] Expr -- REPEAT <stmts> UNTIL <cond> END_REPEAT
   | Case Expr [CaseArm] [Statement] -- CASE <e> OF <arms> [ELSE <stmts>] END_CASE
   | For Identifier Expr Expr (Maybe Expr) [Statement] -- FOR i := init TO end [BY step] DO body END_FOR
+  | FBCall Identifier [CallBind]
   | Skip -- 空文
   deriving (Eq, Show)
 

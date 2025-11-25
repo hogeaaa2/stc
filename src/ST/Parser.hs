@@ -182,8 +182,27 @@ pFunctionBlock = lexeme $ do
   vds <- some pVarDecls
   let vars = concat [vs | VarDecls vs <- vds]
   body <- many pStmt
-  _ <- optional (symbol "END_FUNCTION_BLOCK")
   pure (FunctionBlock fbname (VarDecls vars) body)
+
+-- FB 呼び出しの 1 つの束縛
+pCallBind :: Parser CallBind
+pCallBind = lexeme $ do
+  nm <- identifier
+  -- "=>" 優先（出力バインド）→ 次に ":="（入力/IN_OUT）
+  choice
+    [ CallOut nm <$> (symbol "=>" *> (pBaseVarL >>= pPostfixL)),
+      CallIn nm <$> (symbol ":=" *> pExpr)
+    ]
+
+-- FB 呼び出し「文」:  f( ... );
+pFBCallStmt :: Parser Statement
+pFBCallStmt = lexeme $ do
+  f <- identifier
+  _ <- symbol "("
+  binds <- pCallBind `sepBy` symbol ","
+  _ <- symbol ")"
+  _ <- semicolon
+  pure (FBCall f binds)
 
 pStmt :: Parser Statement
 pStmt = withRecovery recover pStmtCore
@@ -195,7 +214,8 @@ pStmt = withRecovery recover pStmtCore
           pRepeat,
           pCase,
           pFor,
-          pAssign,
+          try $ lookAhead (identifier *> symbol "(") *> pFBCallStmt,
+          try pAssign,
           pSkip
         ]
 
