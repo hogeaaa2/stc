@@ -98,8 +98,8 @@
 
   2. **FB 呼び出しを“文”として表現する**
 
-    * `Statement` に **`CallFB`** を追加（`ECall` は引き続き FUNCTION 用）。
-    * 右記の専用引数 `FBArg`（`in :=` / `out =>` / `inout :=`）で“方向”を保持。
+    * ✅ `Statement` に **`CallFB`** を追加（`ECall` は引き続き FUNCTION 用）。
+    * ✅ 右記の専用引数 `FBArg`（`in :=` / `out =>` / `inout :=`）で“方向”を保持。
     * 既存の `collectPOUParams` を **FB でも流用**（`VKOutput` を ParamOut に含める方針で OK）。
 
   3. **静的検査（elaborate）**
