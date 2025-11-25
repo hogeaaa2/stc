@@ -2417,3 +2417,64 @@ main = hspec $ do
         M.empty
         [fb, prog]
         (\(UnknownFBMember fbName mem _) -> fbName == "FB" && mem == "zz")
+
+  describe "FB call statement (semantics)" $ do
+    let fbDecl =
+          "FUNCTION_BLOCK FB\n\
+          \VAR_INPUT a : INT; END_VAR\n\
+          \VAR_OUTPUT o : INT; END_VAR\n"
+
+    it "accepts input-only bind" $ do
+      let prog =
+            "PROGRAM P\nVAR f: FB; END_VAR\n\
+            \f(a := 1);\n"
+      expectUnitsPassWithMode CodesysLike M.empty [fbDecl, prog]
+
+    it "accepts input + output bind (order free)" $ do
+      let prog =
+            "PROGRAM P\nVAR f: FB; x: INT; END_VAR\n\
+            \f(o => x, a := 2);\n"
+      expectUnitsPassWithMode CodesysLike M.empty [fbDecl, prog]
+
+    it "rejects unknown bind name" $ do
+      let prog =
+            "PROGRAM P\nVAR f: FB; END_VAR\n\
+            \f(bogus := 1);\n"
+      expectUnitsFailWithDetailWithMode @UnknownArgName
+        CodesysLike
+        M.empty
+        [fbDecl, prog]
+        (\(UnknownArgName pou nm _) -> pou == "FB" && nm == "bogus")
+
+    it "rejects duplicate bind name" $ do
+      let prog =
+            "PROGRAM P\nVAR f: FB; END_VAR\n\
+            \f(a := 1, a := 2);\n"
+      expectUnitsFailWithDetailWithMode @DuplicateArgName
+        CodesysLike
+        M.empty
+        [fbDecl, prog]
+        (\(DuplicateArgName pou nm _) -> pou == "FB" && nm == "a")
+
+    it "IN_OUT requires lvalue with := (not literal)" $ do
+      let fbDeclInOut =
+            "FUNCTION_BLOCK FB\n\
+            \VAR_IN_OUT r : INT; END_VAR\n"
+      let progBad =
+            "PROGRAM P\nVAR f: FB; END_VAR\n\
+            \f(r := 1);\n"
+      expectUnitsFailWithDetailWithMode @InOutArgNotLValue
+        CodesysLike
+        M.empty
+        [fbDeclInOut, progBad]
+        (\(InOutArgNotLValue _ _ arg) -> arg == "r")
+
+    it "type mismatch on input bind" $ do
+      let prog =
+            "PROGRAM P\nVAR f: FB; END_VAR\n\
+            \f(a := TRUE);\n"
+      expectUnitsFailWithDetailWithMode @ArgTypeMismatch
+        CodesysLike
+        M.empty
+        [fbDecl, prog]
+        (\(ArgTypeMismatch pou (Just "a") _ _ actTy _) -> pou == "FB" && actTy == BOOL)

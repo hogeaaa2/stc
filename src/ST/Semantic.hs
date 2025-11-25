@@ -64,7 +64,7 @@ module ST.Semantic
   )
 where
 
-import Control.Monad (foldM, forM, forM_, guard, unless, when)
+import Control.Monad (foldM, foldM_, forM, forM_, guard, unless, when)
 import Data.List (sortOn)
 import Data.Map.Strict qualified as M
 import Data.Maybe (catMaybes, fromJust, fromMaybe, listToMaybe)
@@ -431,6 +431,13 @@ elaborateFunctionBlock mode tenv fenv (FunctionBlock fname vds body) = do
           || any (stmtAssignsTo fname') els
       For _ _ _ _ body' ->
         any (stmtAssignsTo fname') body'
+      FBCall _ binds ->
+        any
+          ( \case
+              CallOut _ lv -> lvalueWritesTo fname' lv
+              _ -> False
+          )
+          binds
       Skip ->
         False
 
@@ -1303,7 +1310,7 @@ inferType env = \case
         VRight (FBMeta fbName) -> do
           case M.lookup fbName (envFuncs env) of
             Just FuncSig {fsKind = FKFunctionBlock, fsArgs = argMap} -> do
-              let visible = M.filter (\pi -> piDir pi /= ParamInOut) argMap
+              let visible = M.filter (\pinfo -> piDir pinfo /= ParamInOut) argMap
               case M.lookup (locVal fld) visible of
                 Just ParamInfo {piType = sigTy} ->
                   maybe
@@ -1803,6 +1810,98 @@ checkStmt ::
   VEither e ()
 checkStmt env = \case
   Skip -> VRight ()
+  FBCall fbId binds -> do
+    let tenv = envTypes env
+        fenv = envFuncs env
+        venv = envVars env
+        src = sourceNameOf fbId
+    -- 1) 変数 f が存在するか
+    fbVarTy <-
+      case M.lookup (locVal fbId) venv of
+        Nothing -> VEither.fromLeft $ UnknownVar (locVal fbId) (locSpan fbId)
+        Just ty0 -> pure ty0
+
+    -- 2) f の「FB 名」を取り出す（未解決のまま/メタ型どちらでもOKに）
+    fbNameTxt <- case viType fbVarTy of
+      Named nm -> pure (locVal nm)
+      FBMeta nameT -> pure nameT
+      -- 型がそれ以外なら FB ではない → 既存のエラーで落とす
+      _ -> VEither.fromLeft $ UnknownFunction (locVal fbId) (locSpan fbId)
+
+    -- 3) FuncEnv から FB シグネチャを取る
+    sig <- case M.lookup fbNameTxt fenv of
+      Just s | fsKind s == FKFunctionBlock -> pure s
+      _ -> VEither.fromLeft $ UnknownFunction fbNameTxt (locSpan fbId)
+    let pmap = fsArgs sig
+
+    -- 4) バインド検査（未知名 / 重複 / 型適合 / LValue制約）
+    let step (seen :: Set Text) = \case
+          CallIn nm expr -> do
+            let nmt = locVal nm; sp = locSpan nm
+            when (nmt `Set.member` seen) $
+              VEither.fromLeft $
+                DuplicateArgName fbNameTxt nmt sp
+            ParamInfo {piType = pTy, piDir = pDir} <-
+              case M.lookup nmt pmap of
+                Nothing -> VEither.fromLeft $ UnknownArgName fbNameTxt nmt sp
+                Just pi' -> pure pi'
+            let pTy' = fromJust $ sigTyToSTType pTy
+            case pDir of
+              ParamIn -> do
+                aty <- inferType @e env expr
+                unless (assignCoerce tenv aty pTy') $
+                  VEither.fromLeft $
+                    ArgTypeMismatch fbNameTxt (Just nmt) 1 pTy' aty (spanOfExpr expr)
+                pure (Set.insert nmt seen)
+              ParamInOut -> do
+                -- IN_OUT は LValue 必須（:= でも）
+                case exprToLValue expr of
+                  Nothing -> VEither.fromLeft (InOutArgNotLValue src fbNameTxt nmt)
+                  Just _ -> do
+                    aty <- inferType env expr
+                    unless (assignCoerce tenv aty pTy') $
+                      VEither.fromLeft $
+                        ArgTypeMismatch fbNameTxt (Just nmt) 1 pTy' aty (spanOfExpr expr)
+                    pure (Set.insert nmt seen)
+              ParamOut ->
+                -- 入力側で OUT を指定するのは（当面）型チェックだけ通さず UnknownArgName にせず弾きたいなら
+                -- ここで ArgTypeMismatch 等にしてもよいが、まずは「入力側に OUT は不正」として型不一致扱いにしておく
+                VEither.fromLeft $ UnknownArgName fbNameTxt nmt sp
+          CallOut nm lval -> do
+            let nmt = locVal nm; sp = locSpan nm
+            when (nmt `Set.member` seen) $
+              VEither.fromLeft $
+                DuplicateArgName fbNameTxt nmt sp
+            ParamInfo {piType = pTy, piDir = pDir} <-
+              case M.lookup nmt pmap of
+                Nothing -> VEither.fromLeft $ UnknownArgName fbNameTxt nmt sp
+                Just pi' -> pure pi'
+            -- OUT 先は LValue（パーサで保証済み）。とりあえず ParamOut を想定
+            -- （ParamInOut の => 許可/不許可は後で仕様決め可）
+            unless (pDir == ParamOut) $
+              -- 方向違反は UnknownArgName より明確なエラーを後で追加してもOK
+              VEither.fromLeft $
+                DuplicateArgName fbNameTxt nmt sp -- 仮置き: 既存型に合わせるならここは別エラー化推奨
+                -- 左辺型の特定：ルート変数の型を引いて lvalueType で最終型へ
+            rootId <- case rootVarId lval of
+              Nothing -> VEither.fromLeft WhyDidYouComeHere
+              Just i -> pure i
+
+            baseTy <- case M.lookup (locVal rootId) (envVars env) of
+              Nothing -> VEither.fromLeft $ UnknownVar (locVal rootId) (locSpan rootId)
+              Just t -> pure t
+
+            lhsTy <- lvalueType env (viType baseTy) lval
+
+            -- 型適合（「FB 内部の out の型 pTy を lhs に書けるか？」の向き）
+            let pTy' = fromJust $ sigTyToSTType pTy
+            unless (assignCoerce (envTypes env) pTy' lhsTy) $
+              VEither.fromLeft $
+                ArgTypeMismatch fbNameTxt (Just nmt) 1 lhsTy pTy' (spanOfLValue lval)
+            pure (Set.insert nmt seen)
+
+    foldM_ step Set.empty binds
+    VRight ()
   Assign lv e -> do
     tr <- inferType env e
     tl <- lvalueType env tr lv
@@ -1978,7 +2077,22 @@ checkStmt env = \case
       For _ _ _ _ ss ->
         -- 同じ名前でも“別のループ”という概念は仕様上ないので禁止継続でOK
         mapM_ (denyAssignTo nm) ss
+      FBCall _ binds ->
+        let checkBind = \case
+              CallOut _ lv ->
+                let b = baseIdent lv
+                 in if locVal b == nm
+                      then VEither.fromLeft $ AssignToLoopVar nm (locSpan b)
+                      else VRight ()
+              CallIn _ _ -> VRight ()
+         in mapM_ checkBind binds
       Skip -> VRight ()
+
+rootVarId :: LValue -> Maybe Identifier
+rootVarId = \case
+  LVar i -> Just i
+  LField lv _ -> rootVarId lv
+  LIndex lv _ -> rootVarId lv
 
 -- =========================================================
 --  Constant *Designator* checker (CODESYS 風, CASE セレクタ用)
@@ -2302,6 +2416,17 @@ mustAssignAll req body =
          in foldr Set.intersection elseOut armOuts
       For {} ->
         acc -- 0回実行があり得る
+      FBCall _ binds ->
+        foldl'
+          ( \a b -> case b of
+              CallOut _ lv ->
+                case baseVarName lv of
+                  Just n | n `Set.member` req -> Set.insert n a
+                  _ -> a
+              _ -> a
+          )
+          acc
+          binds
       Skip ->
         acc
 
@@ -2324,3 +2449,16 @@ sigTyToSTType :: SigTy -> Maybe STType
 sigTyToSTType = \case
   SigMono t -> Just t
   _ -> Nothing
+
+-- LValue のソース範囲をざっくり復元
+-- 先頭は LValue の先頭、末尾は最後の識別子 or 最後の添字式の末尾を使う
+spanOfLValue :: LValue -> Span
+spanOfLValue = \case
+  LVar ident ->
+    locSpan ident
+  LField lv fld ->
+    spanFromTo (spanOfLValue lv) (locSpan fld)
+  LIndex lv es ->
+    case reverse es of
+      (eLast : _) -> spanFromTo (spanOfLValue lv) (spanOfExpr eLast)
+      [] -> spanOfLValue lv -- 文法上 [] は来ないはずだけど保険
