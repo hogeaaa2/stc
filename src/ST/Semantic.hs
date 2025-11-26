@@ -63,6 +63,7 @@ module ST.Semantic
     UnknownFBMember (..),
     MissingFBOutputs (..),
     ArgDirectionMismatch (..),
+    InternalError (..),
   )
 where
 

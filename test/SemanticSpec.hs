@@ -2660,3 +2660,26 @@ main = hspec $ do
 
     it "CodesysLike: writing to VAR_INPUT via index passes" $ do
       expectUnitsPassWithMode CodesysLike M.empty [fb2, prog2]
+
+  describe "Aggregate literals require expected type (InternalError)" $ do
+    it "array aggregate on RHS triggers InternalError" $ do
+      let prog =
+            "PROGRAM P\n\
+            \VAR x: INT; END_VAR\n\
+            \x := [0, 0];\n"
+      expectUnitsFailWithDetailWithMode @InternalError
+        CodesysLike
+        M.empty
+        [prog]
+        (const True)
+
+    it "struct aggregate on RHS triggers InternalError" $ do
+      let prog =
+            "PROGRAM P\n\
+            \VAR x: INT; END_VAR\n\
+            \x := (a := 1, b := 2);\n"
+      expectUnitsFailWithDetailWithMode @InternalError
+        CodesysLike
+        M.empty
+        [prog]
+        (const True)
