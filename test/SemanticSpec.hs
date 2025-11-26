@@ -2571,3 +2571,48 @@ main = hspec $ do
       let body = ";\n" -- Skip 相当
       expectStrictFail body "o"
       expectCodesysPass body
+
+  describe "FB call direction mismatch" $ do
+    let fb =
+          "FUNCTION_BLOCK FB\n\
+          \VAR_INPUT  a : INT; END_VAR\n\
+          \VAR_OUTPUT o : INT; END_VAR\n\
+          \VAR_IN_OUT r : INT; END_VAR\n"
+
+    it "reports mismatch: OUT with := (should use =>)" $ do
+      let prog = "PROGRAM P\nVAR f: FB; x: INT; END_VAR\nf(o := 1);\n"
+      expectUnitsFailWithDetailWithMode @ArgDirectionMismatch
+        CodesysLike
+        M.empty
+        [fb, prog]
+        ( \(ArgDirectionMismatch pou arg expected got _sp) ->
+            pou == "FB" && arg == "o" && expected == ParamOut && got == ":="
+        )
+
+    it "reports mismatch: IN with => (should use :=)" $ do
+      let prog = "PROGRAM P\nVAR f: FB; x: INT; END_VAR\nf(a => x);\n"
+      expectUnitsFailWithDetailWithMode @ArgDirectionMismatch
+        CodesysLike
+        M.empty
+        [fb, prog]
+        ( \(ArgDirectionMismatch pou arg expected got _sp) ->
+            pou == "FB" && arg == "a" && expected == ParamIn && got == "=>"
+        )
+
+    it "reports mismatch: IN_OUT with => (should use :=)" $ do
+      let prog = "PROGRAM P\nVAR f: FB; x: INT; END_VAR\nf(r => x);\n"
+      expectUnitsFailWithDetailWithMode @ArgDirectionMismatch
+        CodesysLike
+        M.empty
+        [fb, prog]
+        ( \(ArgDirectionMismatch _pou arg expected got _sp) ->
+            arg == "r" && expected == ParamInOut && got == "=>"
+        )
+
+    it "still keeps InOutArgNotLValue precedence for IN_OUT with literal" $ do
+      let prog = "PROGRAM P\nVAR f: FB; END_VAR\nf(r := 1);\n"
+      expectUnitsFailWithDetailWithMode @InOutArgNotLValue
+        CodesysLike
+        M.empty
+        [fb, prog]
+        (const True)

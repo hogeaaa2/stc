@@ -122,7 +122,7 @@
       * 既存の `lvalueWritesTo` / `stmtAssignsTo` / `caseArmAssignsTo` をそのまま使えます。
       * エラーは `MissingReturn` と別にするなら、例えば `MissingFBOutputs FBName (Set VarName)` のような型を新設。
 
-    2. **方向不一致の明示的エラー**（任意だが推し）
+    2. ✅ **方向不一致の明示的エラー**（任意だが推し）
 
       * いま `CallOut` で ParamOut 以外だった場合にプレースホルダ的なエラーを返している箇所を、
         専用エラー（例：`BindDirectionMismatch POU ArgName ExpectedDir ActualDir Span`）に差し替え。

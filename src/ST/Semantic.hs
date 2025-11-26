@@ -62,6 +62,7 @@ module ST.Semantic
     TypeFBNameClash (..),
     UnknownFBMember (..),
     MissingFBOutputs (..),
+    ArgDirectionMismatch (..),
   )
 where
 
@@ -254,6 +255,8 @@ data UnknownFBMember = UnknownFBMember VariableName MemberName Span deriving (Eq
 
 data MissingFBOutputs = MissingFBOutputs POUName (Set VariableName) deriving (Eq, Show)
 
+data ArgDirectionMismatch = ArgDirectionMismatch POUName ArgName ParamDirKind Text Span deriving (Eq, Show)
+
 type AllErrs =
   [ AssignToConst,
     AssignToLoopVar,
@@ -294,7 +297,8 @@ type AllErrs =
     FBUsedAsExpr,
     TypeFBNameClash,
     UnknownFBMember,
-    MissingFBOutputs
+    MissingFBOutputs,
+    ArgDirectionMismatch
   ]
 
 elaborateUnits ::
@@ -595,7 +599,8 @@ elaborateFunction ::
     FBNotInstantiated :| e,
     FBUsedAsExpr :| e,
     InternalError :| e,
-    UnknownFBMember :| e
+    UnknownFBMember :| e,
+    ArgDirectionMismatch :| e
   ) =>
   SemMode -> TypeEnv -> FuncEnv -> Function -> VEither e Function
 elaborateFunction mode tenv fenv fn = do
@@ -1860,7 +1865,8 @@ checkStmt ::
     FBNotInstantiated :| e,
     FBUsedAsExpr :| e,
     InternalError :| e,
-    UnknownFBMember :| e
+    UnknownFBMember :| e,
+    ArgDirectionMismatch :| e
   ) =>
   Env ->
   Statement ->
@@ -1921,9 +1927,7 @@ checkStmt env = \case
                         ArgTypeMismatch fbNameTxt (Just nmt) 1 pTy' aty (spanOfExpr expr)
                     pure (Set.insert nmt seen)
               ParamOut ->
-                -- 入力側で OUT を指定するのは（当面）型チェックだけ通さず UnknownArgName にせず弾きたいなら
-                -- ここで ArgTypeMismatch 等にしてもよいが、まずは「入力側に OUT は不正」として型不一致扱いにしておく
-                VEither.fromLeft $ UnknownArgName fbNameTxt nmt sp
+                VEither.fromLeft $ ArgDirectionMismatch fbNameTxt nmt ParamOut ":=" sp
           CallOut nm lval -> do
             let nmt = locVal nm; sp = locSpan nm
             when (nmt `Set.member` seen) $
@@ -1936,10 +1940,9 @@ checkStmt env = \case
             -- OUT 先は LValue（パーサで保証済み）。とりあえず ParamOut を想定
             -- （ParamInOut の => 許可/不許可は後で仕様決め可）
             unless (pDir == ParamOut) $
-              -- 方向違反は UnknownArgName より明確なエラーを後で追加してもOK
               VEither.fromLeft $
-                DuplicateArgName fbNameTxt nmt sp -- 仮置き: 既存型に合わせるならここは別エラー化推奨
-                -- 左辺型の特定：ルート変数の型を引いて lvalueType で最終型へ
+                ArgDirectionMismatch fbNameTxt nmt pDir "=>" sp
+            -- 左辺型の特定：ルート変数の型を引いて lvalueType で最終型へ
             rootId <- case rootVarId lval of
               Nothing -> VEither.fromLeft WhyDidYouComeHere
               Just i -> pure i
