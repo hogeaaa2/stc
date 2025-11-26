@@ -128,7 +128,7 @@
         専用エラー（例：`BindDirectionMismatch POU ArgName ExpectedDir ActualDir Span`）に差し替え。
       * 仕様として **IN_OUT への `=>` は不許可**で OK（Codesys の挙動にも沿う）。
 
-    3. **FB 本体内：VAR_INPUT 書き込み禁止（Strict）**の確認
+    3. ✅ **FB 本体内：VAR_INPUT 書き込み禁止（Strict）**の確認
 
       * これは既存の「AssignToInput（Strict でNG / CodesysLike OK）」ロジックが **FB 本体にも効く**状態か要確認。
         もし関数本体だけを対象にしていたら、FB にも同じチェックを掛ける（すぐ入れられます）。
