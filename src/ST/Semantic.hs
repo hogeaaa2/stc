@@ -61,6 +61,7 @@ module ST.Semantic
     FBUsedAsExpr (..),
     TypeFBNameClash (..),
     UnknownFBMember (..),
+    MissingFBOutputs (..),
   )
 where
 
@@ -251,6 +252,8 @@ newtype TypeFBNameClash = TypeFBNameClash Text deriving (Eq, Show)
 
 data UnknownFBMember = UnknownFBMember VariableName MemberName Span deriving (Eq, Show)
 
+data MissingFBOutputs = MissingFBOutputs POUName (Set VariableName) deriving (Eq, Show)
+
 type AllErrs =
   [ AssignToConst,
     AssignToLoopVar,
@@ -290,7 +293,8 @@ type AllErrs =
     FBNotInstantiated,
     FBUsedAsExpr,
     TypeFBNameClash,
-    UnknownFBMember
+    UnknownFBMember,
+    MissingFBOutputs
   ]
 
 elaborateUnits ::
@@ -403,9 +407,9 @@ elaborateFunctionBlock mode tenv fenv (FunctionBlock fname vds body) = do
 
       -- 4-b) VAR_OUTPUT は全経路で代入必須（FUNCTION と同じノリ）
       let outs = Set.fromList [locVal (varName v) | v <- vs1, varKind v == VKOutput]
-      unless (Set.null outs || mustAssignAll outs body) $
-        -- 既存のエラー型を流用。FB 用の専用名が欲しければ別途定義して差し替えてOK
-        VEither.fromLeft (MissingReturn (locVal fname))
+          missing = outs `Set.difference` assignedOnAllPaths outs body
+      unless (Set.null missing) $
+        VEither.fromLeft (MissingFBOutputs (locVal fname) missing)
     CodesysLike -> pure () -- INPUT 書き込みは許容、OUT 全経路チェックもしない
 
   -- 5) 本文の型チェック／検査（あるなら実行。無ければそのまま返す）
@@ -455,6 +459,59 @@ elaborateFunctionBlock mode tenv fenv (FunctionBlock fname vds body) = do
     caseArmAssignsTo :: Text -> CaseArm -> Bool
     caseArmAssignsTo fname' (CaseArm _ stmts) =
       any (stmtAssignsTo fname') stmts
+    -- \| 与えられた必須集合 `req` について、「本体の全パスを通じて
+    --   確実に代入された変数名だけ」を返す。
+    assignedOnAllPaths :: Set.Set Text -> [Statement] -> Set.Set Text
+    assignedOnAllPaths req = goBlock Set.empty
+      where
+        goBlock :: Set.Set Text -> [Statement] -> Set.Set Text
+        goBlock = foldl' goStmt
+
+        -- 1文ずつ「確定代入」情報を更新
+        goStmt :: Set.Set Text -> Statement -> Set.Set Text
+        goStmt acc = \case
+          -- 代入：LHS の“ベース変数名”が req に含まれていれば確定扱いに
+          Assign lv _ ->
+            case baseVarName lv of
+              Just n | n `Set.member` req -> Set.insert n acc
+              _ -> acc
+          -- FB 呼び出し文：
+          --   ここで「この FB の VAR_OUTPUT が書かれた」とは見なさない
+          --   （別の POU の out だから）。よって acc そのまま。
+          FBCall {} ->
+            acc
+          -- IF：全分岐の共通部分のみが確定
+          If {ifThen = th, ifElsifs = eifs, ifElse = els} ->
+            let -- THEN ブロックで確定したもの
+                base :: Set.Set Text
+                base = goBlock acc th
+
+                -- ELSIFそれぞれの確定集合とこれまでの共通集合を交差
+                mergeElsIf :: Set.Set Text -> (Expr, [Statement]) -> Set.Set Text
+                mergeElsIf z (_, bs) = Set.intersection z (goBlock acc bs)
+
+                -- THEN と全 ELSIF の共通集合
+                afterElsIfs :: Set.Set Text
+                afterElsIfs = foldl' mergeElsIf base eifs
+
+                -- ELSE が無ければ「何もしない」パス = acc
+                afterElse :: Set.Set Text
+                afterElse = if null els then acc else goBlock acc els
+             in -- 全分岐（THEN/ELSIF/ELSE）の共通部分のみ残す
+                Set.intersection afterElsIfs afterElse
+          -- WHILE：0回実行もあり得る → 追加なし
+          While _ _ -> acc
+          -- REPEAT：1回は実行される → 本体を反映
+          Repeat bs _ -> goBlock acc bs
+          -- CASE：各腕＋ELSE（無いときは“何もしない”パス）との共通部分
+          Case _ arms els ->
+            let armOuts = map (\(CaseArm _ bs) -> goBlock acc bs) arms
+                elseOut = if null els then acc else goBlock acc els
+             in foldr Set.intersection elseOut armOuts
+          -- FOR：0回実行があり得る → 追加なし
+          For {} -> acc
+          -- Skip：何もしない
+          Skip -> acc
 
 -- 旧 elaborateUnit 本体を Program 単位に切り出したもの
 elaborateProgram ::

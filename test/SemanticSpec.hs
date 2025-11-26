@@ -11,6 +11,7 @@ import Data.List (find)
 import Data.Map.Strict qualified as M
 import Data.Maybe (isJust, isNothing)
 import Data.Proxy (Proxy (..))
+import Data.Set qualified as Set
 import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Typeable (Typeable, typeRep)
@@ -2478,3 +2479,95 @@ main = hspec $ do
         M.empty
         [fbDecl, prog]
         (\(ArgTypeMismatch pou (Just "a") _ _ actTy _) -> pou == "FB" && actTy == BOOL)
+
+  --------------------------------------------------------------------------------
+  -- FB outputs must-assign (Strict vs CodesysLike)
+  --------------------------------------------------------------------------------
+
+  describe "FB outputs must-assign (Strict vs CodesysLike)" $ do
+    -- FB 宣言の共通ヘッダ（END_FUNCTION_BLOCK は省略する方針）
+    let fbHdr =
+          "FUNCTION_BLOCK FB\n\
+          \VAR_INPUT  a : INT; END_VAR\n\
+          \VAR_OUTPUT o : INT; p : INT; END_VAR\n"
+
+    -- 失敗 (Strict, MissingFBOutputs 期待）ヘルパ
+    let expectStrictFail body missingNm =
+          expectUnitsFailWithDetailWithMode @MissingFBOutputs
+            Strict
+            M.empty
+            [fbHdr <> body]
+            (\(MissingFBOutputs _ names) -> Set.member missingNm names)
+
+    -- 成功ヘルパ
+    let expectStrictPass body =
+          expectUnitsPassWithMode Strict M.empty [fbHdr <> body]
+    let expectCodesysPass body =
+          expectUnitsPassWithMode CodesysLike M.empty [fbHdr <> body]
+
+    it "Strict fails when any VAR_OUTPUT is never assigned (even if others are)" $ do
+      -- o は代入されるが p は未代入
+      let body = "o := a;\n"
+      expectStrictFail body "p"
+      expectCodesysPass body
+
+    it "Strict passes when all outputs are assigned on all paths (IF: both branches)" $ do
+      let body =
+            "IF a > 0 THEN\n\
+            \  o := a; p := a;\n\
+            \ELSE\n\
+            \  o := 0; p := 0;\n\
+            \END_IF;\n"
+      expectStrictPass body
+      expectCodesysPass body
+
+    it "Strict fails when an output is not assigned on some path (IF: only THEN assigns)" $ do
+      let body =
+            "IF a > 0 THEN\n\
+            \  o := a; p := a;\n\
+            \END_IF;\n"
+      -- ELSE 無し → 未代入パスがある
+      expectStrictFail body "o" -- どちらでもよいが一つは未達。両方見るなら2ケース作ってOK
+      expectCodesysPass body
+
+    it "Strict fails when only WHILE assigns (0-iteration may skip)" $ do
+      let body =
+            "WHILE a > 0 DO\n\
+            \  o := a; p := a;\n\
+            \END_WHILE;\n"
+      expectStrictFail body "o"
+      expectCodesysPass body
+
+    it "Strict passes when REPEAT assigns (executes at least once)" $ do
+      let body =
+            "REPEAT\n\
+            \  o := a; p := a;\n\
+            \UNTIL a > 0 END_REPEAT;\n"
+      expectStrictPass body
+      expectCodesysPass body
+
+    it "Strict fails for CASE without ELSE where some arms miss assignment" $ do
+      let body =
+            "CASE a OF\n\
+            \  0: o := 0;              \n\
+            \  1: o := 1; p := 1;      \n\
+            \END_CASE;\n"
+      -- a=0 の腕で p 未代入、ELSE も無し
+      expectStrictFail body "p"
+      expectCodesysPass body
+
+    it "Strict passes for CASE with ELSE and all arms assign" $ do
+      let body =
+            "CASE a OF\n\
+            \  0: o := 0; p := 0;      \n\
+            \  1: o := 1; p := 1;      \n\
+            \ELSE                      \n\
+            \  o := 0; p := 0;         \n\
+            \END_CASE;\n"
+      expectStrictPass body
+      expectCodesysPass body
+
+    it "Strict fails when body has only Skip (no assignments)" $ do
+      let body = ";\n" -- Skip 相当
+      expectStrictFail body "o"
+      expectCodesysPass body
