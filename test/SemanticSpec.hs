@@ -2683,3 +2683,35 @@ main = hspec $ do
         M.empty
         [prog]
         (const True)
+
+  describe "FUNCTION vs FUNCTION_BLOCK name clash" $ do
+    it "rejects when FUNCTION and FB share the same name (FUNCTION then FB)" $ do
+      let fun =
+            "FUNCTION F : INT\n\
+            \VAR END_VAR\n\
+            \F := 0;\n"
+          fb =
+            "FUNCTION_BLOCK F\n\
+            \VAR_INPUT a : INT; END_VAR\n\
+            \VAR_OUTPUT o : INT; END_VAR\n"
+      -- プログラムは不要。環境構築時の重複検出だけを確認
+      expectUnitsFailWithDetailWithMode @DuplicateFunction
+        CodesysLike
+        M.empty
+        [fun, fb]
+        (\(DuplicateFunction n) -> n == "F")
+
+    it "rejects when FUNCTION and FB share the same name (FB then FUNCTION)" $ do
+      let fb =
+            "FUNCTION_BLOCK F\n\
+            \VAR_INPUT a : INT; END_VAR\n\
+            \VAR_OUTPUT o : INT; END_VAR\n"
+          fun =
+            "FUNCTION F : INT\n\
+            \VAR END_VAR\n\
+            \F := 0;\n"
+      expectUnitsFailWithDetailWithMode @DuplicateFunction
+        CodesysLike
+        M.empty
+        [fb, fun]
+        (\(DuplicateFunction n) -> n == "F")
