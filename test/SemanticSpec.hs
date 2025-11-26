@@ -2616,3 +2616,47 @@ main = hspec $ do
         M.empty
         [fb, prog]
         (const True)
+
+  describe "FB body: VAR_INPUT write (Strict vs CodesysLike)" $ do
+    -- 最小ケース：入力 a に代入
+    let fb1 =
+          "FUNCTION_BLOCK FB\n\
+          \VAR_INPUT a : INT; END_VAR\n\
+          \VAR_OUTPUT o : INT; END_VAR\n\
+          \a := 1; o := a;\n"
+
+        prog1 =
+          "PROGRAM P\n\
+          \VAR f: FB; x: INT; END_VAR\n\
+          \f(a := 0, o => x);\n"
+
+    it "Strict: writing to VAR_INPUT inside FB fails (AssignToInput)" $ do
+      expectUnitsFailWithDetailWithMode @AssignToInput
+        Strict
+        M.empty
+        [fb1, prog1]
+        (\(AssignToInput _ v) -> v == "a")
+
+    it "CodesysLike: writing to VAR_INPUT inside FB passes" $ do
+      expectUnitsPassWithMode CodesysLike M.empty [fb1, prog1]
+
+    -- 構造/添字でも「ベースがVAR_INPUT」なら禁止されること（Strict）
+    let fb2 =
+          "FUNCTION_BLOCK FB2\n\
+          \VAR_INPUT arr : ARRAY[1..3] OF INT; END_VAR\n\
+          \VAR_OUTPUT o  : INT; END_VAR\n\
+          \arr[1] := 42; o := arr[1];\n"
+        prog2 =
+          "PROGRAM P\n\
+          \VAR f: FB2; x: INT; END_VAR\n\
+          \f(arr := [0,0,0], o => x);\n"
+
+    it "Strict: writing to VAR_INPUT via index also fails (AssignToInput)" $ do
+      expectUnitsFailWithDetailWithMode @AssignToInput
+        Strict
+        M.empty
+        [fb2, prog2]
+        (\(AssignToInput _ v) -> v == "arr")
+
+    it "CodesysLike: writing to VAR_INPUT via index passes" $ do
+      expectUnitsPassWithMode CodesysLike M.empty [fb2, prog2]

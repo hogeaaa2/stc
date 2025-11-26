@@ -1203,8 +1203,18 @@ inferType env = \case
   ELDATE _ -> VRight LDATE
   EDT _ -> VRight DT
   ELDT _ -> VRight LDT
-  EArrayAgg _ -> VEither.fromLeft WhyDidYouComeHere
-  EStructAgg _ -> VEither.fromLeft WhyDidYouComeHere
+  EArrayAgg _ ->
+    VEither.fromLeft $
+      InternalError
+        "Array aggregate literal requires an expected type \
+        \(LHS array type or parameter type). \
+        \Use it only where a concrete array element/range is known."
+  EStructAgg _ ->
+    VEither.fromLeft $
+      InternalError
+        "Struct aggregate literal requires an expected struct type \
+        \(LHS struct type or parameter type). \
+        \Use it only where the field layout is known."
   ECall fn args -> do
     let fname = locVal fn
         fspan = locSpan fn
@@ -1909,12 +1919,38 @@ checkStmt env = \case
                 Nothing -> VEither.fromLeft $ UnknownArgName fbNameTxt nmt sp
                 Just pi' -> pure pi'
             let pTy' = fromJust $ sigTyToSTType pTy
+                -- ★ 配列アグリゲートは「宣言型に合わせて」検査してから通す
+                checkArrayAggAgainst :: [Expr] -> VEither e ()
+                checkArrayAggAgainst es =
+                  case resolveType @e tenv pTy' of
+                    VRight (Array rs elTy) -> do
+                      let need = arrayCapacity rs
+                      -- 長さ
+                      unless (length es == need) $
+                        VEither.fromLeft $
+                          ArgTypeMismatch fbNameTxt (Just nmt) 1 pTy' (Array rs elTy) (spanOfExpr expr)
+                      -- 各要素の型
+                      forM_ es $ \ei -> do
+                        ti <- inferType env ei
+                        unless (assignCoerce tenv ti elTy) $
+                          VEither.fromLeft $
+                            ArgTypeMismatch fbNameTxt (Just nmt) 1 elTy ti (spanOfExpr ei)
+                    _ -> do
+                      -- 期待型が配列でないのに [..] が来た → 不一致
+                      VEither.fromLeft $
+                        ArgTypeMismatch fbNameTxt (Just nmt) 1 pTy' pTy' (spanOfExpr expr)
+
             case pDir of
               ParamIn -> do
-                aty <- inferType @e env expr
-                unless (assignCoerce tenv aty pTy') $
-                  VEither.fromLeft $
-                    ArgTypeMismatch fbNameTxt (Just nmt) 1 pTy' aty (spanOfExpr expr)
+                case expr of
+                  EArrayAgg es -> checkArrayAggAgainst es
+                  -- 将来 Struct アグリゲートにも同様の「宣言型駆動」検査を足せる:
+                  -- EStructAgg fs -> checkStructAggAgainst pTy' fs
+                  _ -> do
+                    aty <- inferType env expr
+                    unless (assignCoerce tenv aty pTy') $
+                      VEither.fromLeft $
+                        ArgTypeMismatch fbNameTxt (Just nmt) 1 pTy' aty (spanOfExpr expr)
                 pure (Set.insert nmt seen)
               ParamInOut -> do
                 -- IN_OUT は LValue 必須（:= でも）
