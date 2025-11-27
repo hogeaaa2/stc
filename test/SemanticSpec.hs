@@ -448,7 +448,7 @@ main = hspec $ do
   describe "STRUCT field access (semantics)" $ do
     it "allows reading r.a when r: STRUCT{a:INT}" $ do
       let srcType =
-            "TYPE R : STRUCT a: INT; END_STRUCT; END_TYPE\n"
+            "TYPE R : STRUCT a: INT; END_STRUCT END_TYPE\n"
           srcProg =
             "PROGRAM P\nVAR\nr: R; x: INT;\nEND_VAR\n\
             \x := r.a;\n"
@@ -456,7 +456,7 @@ main = hspec $ do
 
     it "rejects unknown field r.z" $ do
       let srcs =
-            [ "TYPE R : STRUCT a: INT; END_STRUCT; END_TYPE\n",
+            [ "TYPE R : STRUCT a: INT; END_STRUCT END_TYPE\n",
               "PROGRAM P\nVAR\nr: R; x: INT;\nEND_VAR\n\
               \x := r.z;\n"
             ]
@@ -472,7 +472,7 @@ main = hspec $ do
   describe "array/struct semantics" $ do
     it "accepts struct field - read and write" $ do
       let srcs =
-            [ "TYPE Point : STRUCT x: INT; y: BOOL; END_STRUCT; END_TYPE\n",
+            [ "TYPE Point : STRUCT x: INT; y: BOOL; END_STRUCT END_TYPE\n",
               "PROGRAM P\nVAR r: Point; x: INT; y: BOOL; END_VAR\n\
               \x := r.x; y := r.y;\n\
               \r.x := 1; r.y := TRUE;\n"
@@ -481,7 +481,7 @@ main = hspec $ do
 
     it "rejects unknown field" $ do
       let srcs =
-            [ "TYPE Point : STRUCT x: INT; END_STRUCT; END_TYPE\n",
+            [ "TYPE Point : STRUCT x: INT; END_STRUCT END_TYPE\n",
               "PROGRAM P\nVAR r: Point; END_VAR\n\
               \r.z := 1;\n"
             ]
@@ -1523,7 +1523,7 @@ main = hspec $ do
   describe "Struct aggregate initialization (semantics)" $ do
     it "accepts exact fields in any order" $ do
       let srcs =
-            [ "TYPE R : STRUCT x: INT; y: LREAL; END_STRUCT; END_TYPE\n",
+            [ "TYPE R : STRUCT x: INT; y: LREAL; END_STRUCT END_TYPE\n",
               "PROGRAM P\n\
               \VAR r1: R := (x := 1, y := 2.0); r2: R := (y := 2.0, x := 1); END_VAR\n"
             ]
@@ -1531,7 +1531,7 @@ main = hspec $ do
 
     it "accepts missing fields (fills omitted with defaults)" $ do
       let srcs =
-            [ "TYPE R : STRUCT x: INT; y: INT; END_STRUCT; END_TYPE\n",
+            [ "TYPE R : STRUCT x: INT; y: INT; END_STRUCT END_TYPE\n",
               "PROGRAM P\n\
               \VAR r: R := (x := 1); END_VAR\n"
             ]
@@ -1539,7 +1539,7 @@ main = hspec $ do
 
     it "rejects unknown field in aggregate" $ do
       let srcs =
-            [ "TYPE R : STRUCT x: INT; y: INT; END_STRUCT; END_TYPE\n",
+            [ "TYPE R : STRUCT x: INT; y: INT; END_STRUCT END_TYPE\n",
               "PROGRAM P\n\
               \VAR r: R := (x := 1, z := 0); END_VAR\n"
             ]
@@ -1547,7 +1547,7 @@ main = hspec $ do
 
     it "allows field-wise promotion (INT -> LREAL)" $ do
       let srcs =
-            [ "TYPE R : STRUCT x: INT; y: LREAL; END_STRUCT; END_TYPE\n",
+            [ "TYPE R : STRUCT x: INT; y: LREAL; END_STRUCT END_TYPE\n",
               "PROGRAM P\n\
               \VAR r: R := (x := 1, y := 2); END_VAR\n"
             ]
@@ -1867,7 +1867,7 @@ main = hspec $ do
     it "rejects struct for ID_ANY_INT"
       $ expectUnitsFailWithDetail'' @ArgTypeMismatch
         funsAny
-        [ "TYPE R : STRUCT x: INT; END_STRUCT; END_TYPE\n",
+        [ "TYPE R : STRUCT x: INT; END_STRUCT END_TYPE\n",
           "PROGRAM P\nVAR r: R; END_VAR\nr.x := ID_ANY_INT(r);\n"
         ]
       $ \(ArgTypeMismatch fname _ _ _ actTy _) ->
@@ -2131,7 +2131,7 @@ main = hspec $ do
 
     it "ANY rejects STRUCT" $ do
       let srcs =
-            [ "TYPE R : STRUCT a: INT; END_STRUCT; END_TYPE\n",
+            [ "TYPE R : STRUCT a: INT; END_STRUCT END_TYPE\n",
               "PROGRAM P\nVAR r: R; y: INT; END_VAR\ny := ID_ANY(r);\n"
             ]
       expectUnitsFailWithDetailWithMode @ArgTypeMismatch
@@ -2267,7 +2267,7 @@ main = hspec $ do
     -- 4) 名前付きのあとに位置 → NG (PositionalAfterNamed)
     it "rejects positional after any named" $ do
       let prog = "PROGRAM P\nVAR r: INT; END_VAR\nr := F(x := 1, 2, 3);\n"
-      runNG @PositionalAfterNamed [funF, prog] (\_ -> True)
+      runNG @PositionalAfterNamed [funF, prog] (const True)
 
     -- 5) 同じ名前を2回（両方named）→ NG (DuplicateArgName)
     it "rejects duplicate named" $ do
@@ -2715,3 +2715,143 @@ main = hspec $ do
         M.empty
         [fb, fun]
         (\(DuplicateFunction n) -> n == "F")
+
+  describe "FB field access (minimal policy)" $ do
+    -- 共通FB（単純な入出力 + IN_OUT）
+    let fbBase =
+          "FUNCTION_BLOCK FB\n\
+          \VAR_INPUT  a : INT; END_VAR\n\
+          \VAR_OUTPUT o : INT; END_VAR\n\
+          \VAR_IN_OUT r : INT; END_VAR\n\
+          \o := a;\n"
+
+        -- 構造体出力用の型とFB
+        tyStruct =
+          "TYPE MyS : STRUCT p : INT; END_STRUCT END_TYPE\n"
+        fbStruct =
+          "FUNCTION_BLOCK FBS\n\
+          \VAR_INPUT  a : INT; END_VAR\n\
+          \VAR_OUTPUT o : MyS; END_VAR\n\
+          \o.p := a;\n"
+
+        -- 配列出力FB
+        fbArray =
+          "FUNCTION_BLOCK FBA\n\
+          \VAR_INPUT a : INT; END_VAR\n\
+          \VAR_OUTPUT o : ARRAY[0..1] OF INT; END_VAR\n\
+          \o[0] := a;\n"
+
+    -- ========== 読みOK系 ==========
+    it "allows reading VAR_INPUT as f.a (both modes)" $ do
+      let prog =
+            "PROGRAM P\n\
+            \VAR f: FB; x: INT; END_VAR\n\
+            \x := f.a;\n"
+      expectUnitsPassWithMode Strict M.empty [fbBase, prog]
+      expectUnitsPassWithMode CodesysLike M.empty [fbBase, prog]
+
+    it "allows reading VAR_OUTPUT as f.o (both modes)" $ do
+      let prog =
+            "PROGRAM P\n\
+            \VAR f: FB; x: INT; END_VAR\n\
+            \x := f.o;\n"
+      expectUnitsPassWithMode Strict M.empty [fbBase, prog]
+      expectUnitsPassWithMode CodesysLike M.empty [fbBase, prog]
+
+    it "allows nested read on VAR_OUTPUT struct field (f.o.p) (both modes)" $ do
+      let prog =
+            "PROGRAM P\n\
+            \VAR f: FBS; x: INT; END_VAR\n\
+            \x := f.o.p;\n"
+      expectUnitsPassWithMode Strict M.empty [tyStruct, fbStruct, prog]
+      expectUnitsPassWithMode CodesysLike M.empty [tyStruct, fbStruct, prog]
+
+    it "allows indexed read on VAR_OUTPUT array element (f.o[0]) (both modes)" $ do
+      let prog =
+            "PROGRAM P\n\
+            \VAR f: FBA; x: INT; END_VAR\n\
+            \x := f.o[0];\n"
+      expectUnitsPassWithMode Strict M.empty [fbArray, prog]
+      expectUnitsPassWithMode CodesysLike M.empty [fbArray, prog]
+
+    -- ========== 読みNG（IN_OUT は外から見えない） ==========
+    it "rejects reading VAR_IN_OUT as f.r (UnknownFBMember), both modes" $ do
+      let prog =
+            "PROGRAM P\n\
+            \VAR f: FB; x: INT; END_VAR\n\
+            \x := f.r;\n"
+      expectUnitsFailWithDetailWithMode @UnknownFBMember
+        Strict
+        M.empty
+        [fbBase, prog]
+        (\(UnknownFBMember _ m _) -> m == "r")
+      expectUnitsFailWithDetailWithMode @UnknownFBMember
+        CodesysLike
+        M.empty
+        [fbBase, prog]
+        (\(UnknownFBMember _ m _) -> m == "r")
+
+    -- ========== 書きNG（すべて禁止：入力/出力/合成も） ==========
+    it "rejects assignment to f.a (AssignToFBField), both modes" $ do
+      let prog =
+            "PROGRAM P\n\
+            \VAR f: FB; END_VAR\n\
+            \f.a := 1;\n"
+      expectUnitsFailWithDetailWithMode @AssignToFBField
+        Strict
+        M.empty
+        [fbBase, prog]
+        (\(AssignToFBField _ v m) -> v == "f" && m == "a")
+      expectUnitsFailWithDetailWithMode @AssignToFBField
+        CodesysLike
+        M.empty
+        [fbBase, prog]
+        (\(AssignToFBField _ v m) -> v == "f" && m == "a")
+
+    it "rejects assignment to f.o (AssignToFBField), both modes" $ do
+      let prog =
+            "PROGRAM P\n\
+            \VAR f: FB; END_VAR\n\
+            \f.o := 1;\n"
+      expectUnitsFailWithDetailWithMode @AssignToFBField
+        Strict
+        M.empty
+        [fbBase, prog]
+        (\(AssignToFBField _ v m) -> v == "f" && m == "o")
+      expectUnitsFailWithDetailWithMode @AssignToFBField
+        CodesysLike
+        M.empty
+        [fbBase, prog]
+        (\(AssignToFBField _ v m) -> v == "f" && m == "o")
+
+    it "rejects assignment to nested field f.o.p (AssignToFBField), both modes" $ do
+      let prog =
+            "PROGRAM P\n\
+            \VAR f: FBS; END_VAR\n\
+            \f.o.p := 1;\n"
+      expectUnitsFailWithDetailWithMode @AssignToFBField
+        Strict
+        M.empty
+        [tyStruct, fbStruct, prog]
+        (\(AssignToFBField _ v m) -> v == "f" && m == "p")
+      expectUnitsFailWithDetailWithMode @AssignToFBField
+        CodesysLike
+        M.empty
+        [tyStruct, fbStruct, prog]
+        (\(AssignToFBField _ v m) -> v == "f" && m == "p")
+
+    it "rejects assignment to indexed element f.o[0] (AssignToFBField), both modes" $ do
+      let prog =
+            "PROGRAM P\n\
+            \VAR f: FBA; END_VAR\n\
+            \f.o[0] := 1;\n"
+      expectUnitsFailWithDetailWithMode @AssignToFBField
+        Strict
+        M.empty
+        [fbArray, prog]
+        (\(AssignToFBField _ v _m) -> v == "f")
+      expectUnitsFailWithDetailWithMode @AssignToFBField
+        CodesysLike
+        M.empty
+        [fbArray, prog]
+        (\(AssignToFBField _ v _m) -> v == "f")

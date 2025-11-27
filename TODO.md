@@ -138,15 +138,15 @@
       * 型名 vs FB 名は済。関数名 vs FB 名も一応網羅テストを足しておくと安心。
 
 
-      4. **IR（将来の実行モデル）に落とす足場**
+  4. **IR（将来の実行モデル）に落とす足場**
 
-        * FB を **`fb_step_FBNAME : State × Inputs -> (State', Outputs)`** に下げる想定で IR ノード（ダミー）を用意。
-        * まずは **“文としての副作用あり呼び出し”を IR に載せる**だけ（実際の実行は後続タスク）。
+    * FB を **`fb_step_FBNAME : State × Inputs -> (State', Outputs)`** に下げる想定で IR ノード（ダミー）を用意。
+    * まずは **“文としての副作用あり呼び出し”を IR に載せる**だけ（実際の実行は後続タスク）。
 
-      5. **フィールドアクセスの最小許容**
+  5. ✅ （**フィールドアクセスの最小許容**
 
-        * `EField (EVar f) out` の **“読み”**は FB の `VAR_OUTPUT` に限り許可（型は出力の型）。
-        * **外部からの “書き”**（`LField (LVar f) out := ...`）は **エラー**にする（`AssignToFBOutputOutside` など）。
+    * `EField (EVar f) out` の **“読み”**は FB の `VAR_OUTPUT` に限り許可（型は出力の型）。
+    * **外部からの “書き”**（`LField (LVar f) out := ...`）は **エラー**にする（`AssignToFBOutputOutside` など）。
 
 ---
 

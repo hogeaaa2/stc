@@ -1,3 +1,4 @@
+{-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# OPTIONS_GHC -Wno-partial-fields #-}
 {-# OPTIONS_GHC -Wno-unrecognised-pragmas #-}
@@ -20,7 +21,7 @@ module ST.Parser
   )
 where
 
-import Control.Monad (void)
+import Control.Monad (void, when)
 import Control.Monad.Combinators.Expr
   ( Operator (..),
     makeExprParser,
@@ -139,8 +140,12 @@ pTypeDecl = lexeme $ do
       nm <- identifier
       _ <- symbol ":"
       ty <- pSTType
-      _ <- symbol ";"
+      when (expectsSemi ty) (symbol ";" $> ())
       pure (TypeDecl nm ty)
+
+    expectsSemi = \case
+      Struct _ -> False
+      _ -> True
 
 pProgram :: Parser Program
 pProgram = do

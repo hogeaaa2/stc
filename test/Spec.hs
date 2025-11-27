@@ -354,10 +354,10 @@ main = hspec $ do
   describe "TYPE block parsing" $ do
     let ok =
           [ "TYPE MyInt : INT; END_TYPE",
-            "TYPE Point : STRUCT x: INT; y: INT; END_STRUCT; END_TYPE",
+            "TYPE Point : STRUCT x: INT; y: INT; END_STRUCT END_TYPE",
             "TYPE A : INT; B : BOOL; END_TYPE",
-            "TYPE R : STRUCT a: INT; b: BOOL; END_STRUCT; Alias : R; END_TYPE",
-            "TYPE R : STRUCT p: STRUCT x: INT; END_STRUCT; END_STRUCT; END_TYPE"
+            "TYPE R : STRUCT a: INT; b: BOOL; END_STRUCT Alias : R; END_TYPE",
+            "TYPE R : STRUCT p: STRUCT x: INT; END_STRUCT; END_STRUCT END_TYPE"
           ]
         run = parse (pTypeDecl <* eof) "<test>"
     forM_ ok $ \tc ->
@@ -800,7 +800,7 @@ main = hspec $ do
 
     it "parses struct aggregate with named fields" $ do
       let srcType =
-            "TYPE R : STRUCT x: INT; y: LREAL; END_STRUCT; END_TYPE\n"
+            "TYPE R : STRUCT x: INT; y: LREAL; END_STRUCT END_TYPE\n"
           srcProg =
             "PROGRAM P\n\
             \VAR\n\
@@ -818,7 +818,7 @@ main = hspec $ do
 
     it "parses struct aggregate in any field order" $ do
       let srcType =
-            "TYPE R : STRUCT x: INT; y: LREAL; END_STRUCT; END_TYPE\n"
+            "TYPE R : STRUCT x: INT; y: LREAL; END_STRUCT END_TYPE\n"
           srcProg =
             "PROGRAM P\n\
             \VAR\n\
@@ -834,7 +834,7 @@ main = hspec $ do
 
     it "parses nested aggregate: array of structs" $ do
       let srcType =
-            "TYPE R : STRUCT x: INT; y: INT; END_STRUCT; END_TYPE\n"
+            "TYPE R : STRUCT x: INT; y: INT; END_STRUCT END_TYPE\n"
           srcProg =
             "PROGRAM P\n\
             \VAR\n\

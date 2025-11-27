@@ -64,6 +64,7 @@ module ST.Semantic
     MissingFBOutputs (..),
     ArgDirectionMismatch (..),
     InternalError (..),
+    AssignToFBField (..),
   )
 where
 
@@ -258,6 +259,8 @@ data MissingFBOutputs = MissingFBOutputs POUName (Set VariableName) deriving (Eq
 
 data ArgDirectionMismatch = ArgDirectionMismatch POUName ArgName ParamDirKind Text Span deriving (Eq, Show)
 
+data AssignToFBField = AssignToFBField FilePath VariableName MemberName deriving (Eq, Show)
+
 type AllErrs =
   [ AssignToConst,
     AssignToLoopVar,
@@ -299,7 +302,8 @@ type AllErrs =
     TypeFBNameClash,
     UnknownFBMember,
     MissingFBOutputs,
-    ArgDirectionMismatch
+    ArgDirectionMismatch,
+    AssignToFBField
   ]
 
 elaborateUnits ::
@@ -601,7 +605,8 @@ elaborateFunction ::
     FBUsedAsExpr :| e,
     InternalError :| e,
     UnknownFBMember :| e,
-    ArgDirectionMismatch :| e
+    ArgDirectionMismatch :| e,
+    AssignToFBField :| e
   ) =>
   SemMode -> TypeEnv -> FuncEnv -> Function -> VEither e Function
 elaborateFunction mode tenv fenv fn = do
@@ -1877,7 +1882,8 @@ checkStmt ::
     FBUsedAsExpr :| e,
     InternalError :| e,
     UnknownFBMember :| e,
-    ArgDirectionMismatch :| e
+    ArgDirectionMismatch :| e,
+    AssignToFBField :| e
   ) =>
   Env ->
   Statement ->
@@ -2000,28 +2006,33 @@ checkStmt env = \case
     foldM_ step Set.empty binds
     VRight ()
   Assign lv e -> do
-    tr <- inferType env e
-    tl <- lvalueType env tr lv
-    -- 特例: 右辺が整数リテラルで、左辺が整数/ビット列 → 範囲チェック
-    case (isIntOrBits tl, numericLiteralValue e) of
-      (True, Just n) ->
-        if fitsIn tl n
-          then VRight ()
-          else VEither.fromLeft $ OutOfRange (lvalueRootName lv) tl n (spanOfExpr e)
-      _ ->
-        if assignCoerce (envTypes env) tr tl
-          then VRight ()
-          else VEither.fromLeft $ TypeMismatch (lvalueRootName lv) (spanOfExpr e) tl tr
+    mfb <- fbSubfieldTarget @e env lv
+    case mfb of
+      Just (vnm, mFld) ->
+        VEither.fromLeft $ AssignToFBField (sourceNameOf' lv) vnm (fromMaybe "" mFld)
+      Nothing -> do
+        tr <- inferType env e
+        tl <- lvalueType env tr lv
+        -- 特例: 右辺が整数リテラルで、左辺が整数/ビット列 → 範囲チェック
+        case (isIntOrBits tl, numericLiteralValue e) of
+          (True, Just n) ->
+            if fitsIn tl n
+              then VRight ()
+              else VEither.fromLeft $ OutOfRange (lvalueRootName lv) tl n (spanOfExpr e)
+          _ ->
+            if assignCoerce (envTypes env) tr tl
+              then VRight ()
+              else VEither.fromLeft $ TypeMismatch (lvalueRootName lv) (spanOfExpr e) tl tr
 
-    when (envMode env == Strict) $
-      case baseVarName lv of
-        Just n ->
-          case M.lookup n (envVars env) of
-            Just vi
-              | viKind vi == VKInput ->
-                  VEither.fromLeft (AssignToInput (sourceNameOf $ fromLValue lv) n)
-            _ -> pure ()
-        Nothing -> pure ()
+        when (envMode env == Strict) $
+          case baseVarName lv of
+            Just n ->
+              case M.lookup n (envVars env) of
+                Just vi
+                  | viKind vi == VKInput ->
+                      VEither.fromLeft (AssignToInput (sourceNameOf $ fromLValue lv) n)
+                _ -> pure ()
+            Nothing -> pure ()
   If c0 th0 elsifs els -> do
     t0 <- inferType env c0
     if t0 == BOOL
@@ -2190,6 +2201,15 @@ rootVarId = \case
   LVar i -> Just i
   LField lv _ -> rootVarId lv
   LIndex lv _ -> rootVarId lv
+
+--   f.o.p なら Just "p"
+--   f.o[0] なら Just "o"
+--   f       なら Nothing
+lastFieldIdent :: LValue -> Maybe Identifier
+lastFieldIdent = \case
+  LVar _ -> Nothing
+  LIndex lv _ -> lastFieldIdent lv
+  LField _lv fld -> Just fld
 
 -- =========================================================
 --  Constant *Designator* checker (CODESYS 風, CASE セレクタ用)
@@ -2467,6 +2487,12 @@ noSpan = Span dummyPos dummyPos
 sourceNameOf :: Identifier -> FilePath
 sourceNameOf ident = sourceName $ spanStart $ locSpan ident
 
+sourceNameOf' :: LValue -> FilePath
+sourceNameOf' = \case
+  LVar i -> sourceNameOf i
+  LField l _ -> sourceNameOf' l
+  LIndex l _ -> sourceNameOf' l
+
 -- LValue の“ベース変数名”を抽出
 baseVarName :: LValue -> Maybe Text
 baseVarName = \case
@@ -2559,3 +2585,28 @@ spanOfLValue = \case
     case reverse es of
       (eLast : _) -> spanFromTo (spanOfLValue lv) (spanOfExpr eLast)
       [] -> spanOfLValue lv -- 文法上 [] は来ないはずだけど保険
+
+-- 「FBの配下を指している代入か？」判定。返り値は (FB変数名, 直近のフィールド名)
+fbSubfieldTarget ::
+  Env ->
+  LValue ->
+  VEither e (Maybe (Text, Maybe Text))
+fbSubfieldTarget env lv = do
+  case rootVarId lv of
+    Nothing -> pure Nothing
+    Just rid -> do
+      let vnm = locVal rid
+          fenv = envFuncs env
+          isRoot = case lv of LVar _ -> True; _ -> False
+      case M.lookup vnm (envVars env) of
+        Nothing -> pure Nothing
+        Just vi -> case viType vi of
+          FBMeta _fbName
+            | not isRoot ->
+                pure (Just (vnm, fmap locVal (lastFieldIdent lv)))
+          Named fbTyId
+            | not isRoot,
+              Just sig <- M.lookup (locVal fbTyId) fenv,
+              fsKind sig == FKFunctionBlock ->
+                pure (Just (vnm, fmap locVal (lastFieldIdent lv)))
+          _ -> pure Nothing
