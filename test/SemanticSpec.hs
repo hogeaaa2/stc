@@ -290,7 +290,7 @@ main = hspec $ do
           let v :: VEither AllErrs Program
               v = elaborateProgramTest prog
            in v `shouldSatisfy` \case
-                VRight (Program _ (VarDecls [vx, vy]) _) ->
+                VRight (Program _ [vx, vy] _) ->
                   varInit vx == Just (EINT 0)
                     && varInit vy == Just (EBOOL False)
                 _ -> False
@@ -427,7 +427,7 @@ main = hspec $ do
             ]
       elaborateProjectTest M.empty srcs `shouldSatisfy` \case
         VRight us ->
-          case [v | UProgram (Program _ (VarDecls [v]) _) <- us] of
+          case [v | UProgram (Program _ [v] _) <- us] of
             [v] -> varType v == INT && varInit v == Just (EINT 0)
             _ -> False
         _ -> False
@@ -598,7 +598,7 @@ main = hspec $ do
         case (elaborateUnits M.empty us :: VEither AllErrs [Unit]) of
           VLeft e -> expectationFailure (show e)
           VRight units ->
-            case [v | UProgram (Program _ (VarDecls [v]) _) <- units] of
+            case [v | UProgram (Program _ [v] _) <- units] of
               [v] ->
                 case varInit v of
                   Just (EField (EVar ty) ctor) -> do
@@ -792,7 +792,7 @@ main = hspec $ do
         let v :: VEither AllErrs Program
             v = elaborateProgramTest prog
          in v `shouldSatisfy` \case
-              VRight (Program _ (VarDecls [val]) _) -> varInit val == Just (ESTRING "")
+              VRight (Program _ [val] _) -> varInit val == Just (ESTRING "")
               _ -> False
 
     it "fills empty string for STRING(80) and STRING[32]" $ do
@@ -802,14 +802,14 @@ main = hspec $ do
         let v :: VEither AllErrs Program
             v = elaborateProgramTest p1
          in v `shouldSatisfy` \case
-              VRight (Program _ (VarDecls [val]) _) -> varInit val == Just (ESTRING "")
+              VRight (Program _ [val] _) -> varInit val == Just (ESTRING "")
               _ -> False
 
       expectParsed s2 $ \p2 ->
         let v :: VEither AllErrs Program
             v = elaborateProgramTest p2
          in v `shouldSatisfy` \case
-              VRight (Program _ (VarDecls [val]) _) -> varInit val == Just (ESTRING "")
+              VRight (Program _ [val] _) -> varInit val == Just (ESTRING "")
               _ -> False
 
   describe "STRING semantics" $ do
@@ -1013,7 +1013,7 @@ main = hspec $ do
         let p :: VEither AllErrs Program
             p = elaborateProgramTest prog
          in p `shouldSatisfy` \case
-              VRight (Program _ (VarDecls vs) _) -> all (\v -> varInit v == Just (EINT 0)) vs
+              VRight (Program _ vs _) -> all (\v -> varInit v == Just (EINT 0)) vs
               _ -> False
 
     it "accepts assigning integer literal to each extended int/bitstring variable" $ do
@@ -1644,7 +1644,7 @@ main = hspec $ do
         Right p ->
           case elaborateProgramTest p :: VEither AllErrs Program of
             VLeft es -> expectationFailure ("elaboration failed: " <> show es)
-            VRight (Program _ (VarDecls vs) _) -> do
+            VRight (Program _ vs _) -> do
               let lookupInit nm = varInit =<< find (\v -> locVal (varName v) == nm) vs
               isJust (lookupInit "t") `shouldBe` True
               isJust (lookupInit "tod") `shouldBe` True

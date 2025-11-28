@@ -2,7 +2,6 @@
 
 module ST.AST
   ( Program (..),
-    VarDecls (..),
     Expr (..),
     STType (..),
     Variable (..),
@@ -71,13 +70,10 @@ data VarInfo = VarInfo
 
 data Program = Program
   { progName :: Identifier,
-    progVarDecls :: VarDecls,
+    progVarDecls :: [Variable],
     progBody :: [Statement]
   }
   deriving (Eq, Show)
-
--- var_declarations
-newtype VarDecls = VarDecls [Variable] deriving (Eq, Show)
 
 data TypeDecl = TypeDecl
   { typeName :: Identifier,
@@ -99,14 +95,14 @@ data Unit
 data Function = Function
   { funcName :: Identifier,
     funcRetType :: STType,
-    funcVarDecls :: VarDecls,
+    funcVarDecls :: [Variable],
     fBody :: [Statement]
   }
   deriving (Eq, Show)
 
 data FunctionBlock = FunctionBlock
   { fbName :: Identifier,
-    fbVarDecls :: VarDecls,
+    fbVarDecls :: [Variable],
     fbBody :: [Statement]
   }
   deriving (Eq, Show)

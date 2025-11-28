@@ -151,13 +151,13 @@ pProgram :: Parser Program
 pProgram = do
   _ <- symbol "PROGRAM"
   pn <- identifier
-  vds <- some pVarDecls
-  let vars = concat [vs | VarDecls vs <- vds]
+  vds <- some pVariables
+  let vars = concat vds
   body <- many pStmt
-  pure (Program pn (VarDecls vars) body)
+  pure (Program pn vars body)
 
-pVarDecls :: Parser VarDecls
-pVarDecls = lexeme $ do
+pVariables :: Parser [Variable]
+pVariables = lexeme $ do
   kind <-
     choice
       [ VKInOut <$ try (symbol "VAR_IN_OUT"),
@@ -166,8 +166,7 @@ pVarDecls = lexeme $ do
         VKLocal <$ symbol "VAR"
       ]
   isConst <- isJust <$> optional (symbol "CONSTANT")
-  vs <- manyTill (pVariable kind isConst) (symbol "END_VAR")
-  pure (VarDecls vs)
+  manyTill (pVariable kind isConst) (symbol "END_VAR")
 
 pFunction :: Parser Function
 pFunction = do
@@ -175,19 +174,19 @@ pFunction = do
   fname <- identifier
   _ <- symbol ":"
   ftype <- pSTType
-  vds <- some pVarDecls
-  let vars = concat [vs | VarDecls vs <- vds]
+  vds <- some pVariables
+  let vars = concat vds
   body <- many pStmt
-  pure (Function fname ftype (VarDecls vars) body)
+  pure (Function fname ftype vars body)
 
 pFunctionBlock :: Parser FunctionBlock
 pFunctionBlock = lexeme $ do
   _ <- symbol "FUNCTION_BLOCK"
   fbname <- identifier
-  vds <- some pVarDecls
-  let vars = concat [vs | VarDecls vs <- vds]
+  vds <- some pVariables
+  let vars = concat vds
   body <- many pStmt
-  pure (FunctionBlock fbname (VarDecls vars) body)
+  pure (FunctionBlock fbname vars body)
 
 -- FB 呼び出しの 1 つの束縛
 pCallBind :: Parser CallBind

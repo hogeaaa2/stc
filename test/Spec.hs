@@ -42,8 +42,8 @@ varSig v =
     varConst v
   )
 
-varSigs :: VarDecls -> [(Text, STType, Maybe Expr, Bool)]
-varSigs (VarDecls vs) = map varSig vs
+varSigs :: [Variable] -> [(Text, STType, Maybe Expr, Bool)]
+varSigs = map varSig
 
 expectRight :: (Show e) => Either e a -> (a -> Expectation) -> Expectation
 expectRight (Left e) _ = expectationFailure (show e)
@@ -570,7 +570,7 @@ main = hspec $ do
     it "parses STRING(80) in VAR block" $ do
       let src = "PROGRAM P\nVAR s: STRING(80); END_VAR\n"
       expectRight (parseProgram src) $ \case
-        Program _ (VarDecls [v]) _ ->
+        Program _ [v] _ ->
           varSig v `shouldBe` ("s", STRING (Just 80), Nothing, False)
         other ->
           expectationFailure ("unexpected program shape: " <> show other)
@@ -579,7 +579,7 @@ main = hspec $ do
     it "parses STRING[32] in VAR block" $ do
       let src = "PROGRAM P\nVAR s: STRING[32]; END_VAR\n"
       expectRight (parseProgram src) $ \case
-        Program _ (VarDecls [v]) _ ->
+        Program _ [v] _ ->
           varSig v `shouldBe` ("s", STRING (Just 32), Nothing, False)
         other ->
           expectationFailure ("unexpected program shape: " <> show other)

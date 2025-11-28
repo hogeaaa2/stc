@@ -384,7 +384,7 @@ elaborateFunctionBlock ::
   SemMode -> TypeEnv -> FuncEnv -> FunctionBlock -> VEither AllErrs FunctionBlock
 elaborateFunctionBlock mode tenv fenv (FunctionBlock fname vds body) = do
   -- 1) 型解決済み VarDecls へ
-  VarDecls vs0 <- resolveVarTypes tenv vds
+  vs0 <- resolveVarTypes tenv vds
 
   -- 2) VarEnv 構築（重複チェック込み）
   venv <- foldM insertVar M.empty vs0
@@ -425,7 +425,7 @@ elaborateFunctionBlock mode tenv fenv (FunctionBlock fname vds body) = do
   -- 既に elabStmt / elabStmts があるなら有効化して:
   -- body' <- traverse (elabStmt env) body
   -- pure $ FunctionBlock fname (VarDecls vs1) body'
-  pure $ FunctionBlock fname (VarDecls vs1) body
+  pure $ FunctionBlock fname vs1 body
   where
     stmtAssignsTo :: Text -> Statement -> Bool
     stmtAssignsTo fname' = \case
@@ -527,7 +527,7 @@ elaborateProgram ::
   SemMode -> TypeEnv -> FuncEnv -> Program -> VEither AllErrs Program
 elaborateProgram mode tenv fenv (Program n vds body) = do
   -- 型解決済み VarDecls
-  VarDecls vs <- resolveVarTypes tenv vds
+  vs <- resolveVarTypes tenv vds
   -- VarEnv 構築（重複チェック込み）
   venv <- foldM insertVar M.empty vs
 
@@ -544,7 +544,7 @@ elaborateProgram mode tenv fenv (Program n vds body) = do
 
   -- ステートメント検査
   mapM_ (checkStmt env) body
-  pure (Program n (VarDecls vs'') body)
+  pure (Program n vs'' body)
 
 insertVar ::
   (DuplicateVar :| e) =>
@@ -617,7 +617,7 @@ elaborateFunction mode tenv fenv fn = do
   -- 自分の宣言を解決するだけ
   retTyST <- resolveType tenv (funcRetType fn)
   -- 変数宣言の型解決
-  vds'@(VarDecls vs) <- resolveVarTypes tenv fvds
+  vs <- resolveVarTypes tenv fvds
 
   -- VarEnv 構築（DuplicateVar などは insertVar に任せる）
   venv0 <- foldM insertVar M.empty vs
@@ -657,7 +657,7 @@ elaborateFunction mode tenv fenv fn = do
           outNames =
             Set.fromList
               [ locVal (varName v)
-              | let VarDecls vs' = funcVarDecls fn,
+              | let vs' = funcVarDecls fn,
                 v <- vs',
                 varKind v == VKOutput
               ]
@@ -667,7 +667,7 @@ elaborateFunction mode tenv fenv fn = do
     CodesysLike -> pure ()
 
   -- resolve 済み VarDecls を差し込んだ Function を返す
-  pure fn {funcVarDecls = vds'}
+  pure fn {funcVarDecls = vs}
 
 -- 複数 Unit の全 TYPE を一括解決して最終 TypeEnv を返す
 typeEnvFromUnits ::
@@ -809,8 +809,8 @@ collectPOUParams ::
   ( TypeCycle :| e,
     UnknownType :| e
   ) =>
-  TypeEnv -> VarDecls -> VEither e [ParamSig]
-collectPOUParams tenv (VarDecls vs) =
+  TypeEnv -> [Variable] -> VEither e [ParamSig]
+collectPOUParams tenv vs =
   fmap catMaybes . forM vs $ \v ->
     case varKind v of
       VKInput -> Just <$> mk ParamIn v
@@ -2291,10 +2291,8 @@ resolveVarTypes ::
   ( TypeCycle :| e,
     UnknownType :| e
   ) =>
-  TypeEnv -> VarDecls -> VEither e VarDecls
-resolveVarTypes tenv (VarDecls vs) = do
-  vs' <- traverse step vs
-  pure (VarDecls vs')
+  TypeEnv -> [Variable] -> VEither e [Variable]
+resolveVarTypes tenv = traverse step
   where
     step v = do
       let origTy = varType v
