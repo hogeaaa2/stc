@@ -270,10 +270,10 @@ main = hspec $ do
 
   describe "Variable declaration" $ do
     let ok =
-          [ ("_LIM_SW5:INT;", Variable (toIdent "_LIM_SW5") INT Nothing VKLocal False False),
-            ("ab:BOOL;", Variable (toIdent "ab") BOOL Nothing VKLocal False False)
+          [ ("_LIM_SW5:INT;", Variable (toIdent "_LIM_SW5") INT Nothing VKLocal False Nothing),
+            ("ab:BOOL;", Variable (toIdent "ab") BOOL Nothing VKLocal False Nothing)
           ]
-        run = parse (pVariable VKLocal False <* eof) "<test>"
+        run = parse (pVariable VKLocal False Nothing <* eof) "<test>"
     forM_ ok $ \(tc, want) ->
       it ("parses " <> T.unpack tc) $
         shouldParseTo run tc want
@@ -1031,3 +1031,97 @@ main = hspec $ do
       case parseUnits' [fbDecl, prog] of
         Left e -> expectationFailure (show e)
         Right _ -> pure ()
+
+  describe "POU VAR_* sections (parsing)" $ do
+    it "parses VAR/INPUT/OUTPUT/IN_OUT/TEMP/EXTERNAL in PROGRAM and sets VarKind"
+      $ expectParsedUnits
+        [ T.unlines
+            [ "PROGRAM P",
+              "VAR",
+              "  x : INT;",
+              "END_VAR",
+              "",
+              "VAR_INPUT",
+              "  i : INT;",
+              "END_VAR",
+              "",
+              "VAR_OUTPUT",
+              "  o : INT;",
+              "END_VAR",
+              "",
+              "VAR_IN_OUT",
+              "  io : INT;",
+              "END_VAR",
+              "",
+              "VAR_TEMP",
+              "  t : INT;",
+              "END_VAR",
+              "",
+              "VAR_EXTERNAL",
+              "  e : INT;",
+              "END_VAR"
+            ]
+        ]
+      $ \units -> case units of
+        [UProgram p] -> do
+          let vars :: [Variable]
+              vars = progVars p
+
+          let nameKindPairs =
+                [ (locVal (varName v), varKind v)
+                | v <- vars
+                ]
+
+          nameKindPairs
+            `shouldMatchList` [ ("x", VKLocal),
+                                ("i", VKInput),
+                                ("o", VKOutput),
+                                ("io", VKInOut),
+                                ("t", VKTemp),
+                                ("e", VKExternal)
+                              ]
+
+          -- デフォルトでは CONSTANT / RETAIN は付いていないことも確認
+          forM_ vars $ \v -> do
+            varConst v `shouldBe` False
+            varRetain v `shouldBe` Nothing
+        _ ->
+          expectationFailure $
+            "expected exactly one UProgram, got: " <> show units
+
+    it "propagates CONSTANT / RETAIN / NON_RETAIN from section header to Variables"
+      $ expectParsedUnits
+        [ T.unlines
+            [ "FUNCTION_BLOCK FB1",
+              "VAR CONSTANT RETAIN",
+              "  c1 : INT;",
+              "END_VAR",
+              "",
+              "VAR_INPUT NON_RETAIN",
+              "  i1 : INT;",
+              "END_VAR"
+            ]
+        ]
+      $ \units -> case units of
+        [UFunctionBlock fb] -> do
+          let vars :: [Variable]
+              vars = fbVars fb
+
+          let lookupVar name =
+                case filter ((== name) . locVal . varName) vars of
+                  [v] -> v
+                  [] -> error $ "variable not found: " <> T.unpack name
+                  _ -> error $ "duplicate variable: " <> T.unpack name
+
+          let c1 = lookupVar "c1"
+          varKind c1 `shouldBe` VKLocal
+          varConst c1 `shouldBe` True
+          varRetain c1 `shouldBe` Just Retain
+
+          let i1 = lookupVar "i1"
+          varKind i1 `shouldBe` VKInput
+          varConst i1 `shouldBe` False
+          varRetain i1 `shouldBe` Just NonRetain
+        _ ->
+          expectationFailure $
+            "expected exactly one UFunctionBlock, got: " <> show units

@@ -27,6 +27,7 @@ module ST.AST
     Function (..),
     FunctionBlock (..),
     CallBind (..),
+    VarRetain (..),
   )
 where
 
@@ -56,21 +57,28 @@ data VarKind
   | VKInOut -- VAR_INOUT
   | VKTemp -- VAR_TEMP
   | VKGlobal -- VAR_GLOBAL
+  | VKExternal -- VAR_EXTERNAL
+  | VKConfig -- VAR_CONFIG
   deriving (Eq, Show)
+
+data VarRetain
+  = Retain
+  | NonRetain
+  deriving (Eq, Ord, Show)
 
 data VarInfo = VarInfo
   { viType :: STType,
     viSpan :: Span,
     viKind :: VarKind,
     viConst :: Bool,
-    viRetain :: Bool,
+    viRetain :: Maybe VarRetain,
     viInit :: Maybe Expr
   }
   deriving (Show, Eq)
 
 data Program = Program
   { progName :: Identifier,
-    progVarDecls :: [Variable],
+    progVars :: [Variable],
     progBody :: [Statement]
   }
   deriving (Eq, Show)
@@ -95,14 +103,14 @@ data Unit
 data Function = Function
   { funcName :: Identifier,
     funcRetType :: STType,
-    funcVarDecls :: [Variable],
+    funcVars :: [Variable],
     fBody :: [Statement]
   }
   deriving (Eq, Show)
 
 data FunctionBlock = FunctionBlock
   { fbName :: Identifier,
-    fbVarDecls :: [Variable],
+    fbVars :: [Variable],
     fbBody :: [Statement]
   }
   deriving (Eq, Show)
@@ -229,7 +237,7 @@ data Variable = Variable
     varInit :: Maybe Expr,
     varKind :: VarKind, -- VAR/INPUT/OUTPUT/...
     varConst :: Bool, -- CONSTANT
-    varRetain :: Bool
+    varRetain :: Maybe VarRetain -- RETAIN / NON_RETAIN / なし
   }
   deriving (Eq, Show)
 

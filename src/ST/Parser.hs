@@ -163,10 +163,16 @@ pVariables = lexeme $ do
       [ VKInOut <$ try (symbol "VAR_IN_OUT"),
         VKInput <$ try (symbol "VAR_INPUT"),
         VKOutput <$ try (symbol "VAR_OUTPUT"),
+        VKExternal <$ try (symbol "VAR_EXTERNAL"),
+        VKTemp <$ try (symbol "VAR_TEMP"),
         VKLocal <$ symbol "VAR"
       ]
   isConst <- isJust <$> optional (symbol "CONSTANT")
-  manyTill (pVariable kind isConst) (symbol "END_VAR")
+  mRetain <-
+    optional $
+      (Retain <$ symbol "RETAIN")
+        <|> (NonRetain <$ symbol "NON_RETAIN")
+  manyTill (pVariable kind isConst mRetain) (symbol "END_VAR")
 
 pFunction :: Parser Function
 pFunction = do
@@ -309,8 +315,8 @@ pExpr = makeExprParser pTerm table
 --   pure (foldl LField (LVar x) fs)
 
 -- Var_Decl_Init
-pVariable :: VarKind -> Bool -> Parser Variable
-pVariable kind isConst = lexeme $ do
+pVariable :: VarKind -> Bool -> Maybe VarRetain -> Parser Variable
+pVariable kind isConst mRetain = lexeme $ do
   name <- identifier
   _ <- colon
   dt <- pSTType
@@ -323,7 +329,7 @@ pVariable kind isConst = lexeme $ do
         varInit = vInit,
         varConst = isConst,
         varKind = kind,
-        varRetain = False
+        varRetain = mRetain
       }
 
 pInt :: Parser Int
@@ -405,11 +411,15 @@ reserved =
       "VAR_IN_OUT",
       "VAR_TEMP",
       "VAR_GLOBAL",
+      "VAR_EXTERNAL",
+      "VAR_CONFIG",
       "INT",
       "BOOL",
       "TRUE",
       "FALSE",
       "CONSTANT",
+      "RETAIN",
+      "NON_RETAIN",
       "NOT",
       "AND",
       "OR",

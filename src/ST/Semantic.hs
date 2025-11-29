@@ -611,7 +611,7 @@ elaborateFunction ::
   SemMode -> TypeEnv -> FuncEnv -> Function -> VEither e Function
 elaborateFunction mode tenv fenv fn = do
   let fname = locVal $ funcName fn
-      fvds = funcVarDecls fn
+      fvds = funcVars fn
       fbody = fBody fn
 
   -- 自分の宣言を解決するだけ
@@ -630,7 +630,7 @@ elaborateFunction mode tenv fenv fn = do
             viSpan = noSpan,
             viKind = VKLocal,
             viConst = False,
-            viRetain = False,
+            viRetain = Nothing,
             viInit = Nothing
           }
   venv1 <-
@@ -657,7 +657,7 @@ elaborateFunction mode tenv fenv fn = do
           outNames =
             Set.fromList
               [ locVal (varName v)
-              | let vs' = funcVarDecls fn,
+              | let vs' = funcVars fn,
                 v <- vs',
                 varKind v == VKOutput
               ]
@@ -667,7 +667,7 @@ elaborateFunction mode tenv fenv fn = do
     CodesysLike -> pure ()
 
   -- resolve 済み VarDecls を差し込んだ Function を返す
-  pure fn {funcVarDecls = vs}
+  pure fn {funcVars = vs}
 
 -- 複数 Unit の全 TYPE を一括解決して最終 TypeEnv を返す
 typeEnvFromUnits ::
@@ -750,7 +750,7 @@ addFunction tenv env f = do
   retTy' <- resolveType tenv (funcRetType f)
 
   -- パラメータ一覧を構築
-  params <- collectPOUParams tenv (funcVarDecls f)
+  params <- collectPOUParams tenv (funcVars f)
 
   let fsArgsMap :: M.Map Text ParamInfo
       fsArgsMap =
@@ -781,8 +781,8 @@ addFunctionBlock ::
     DuplicateFunction :| e
   ) =>
   TypeEnv -> FuncEnv -> FunctionBlock -> VEither e FuncEnv
-addFunctionBlock tenv env (FunctionBlock {fbName, fbVarDecls}) = do
-  params <- collectPOUParams tenv fbVarDecls
+addFunctionBlock tenv env (FunctionBlock {fbName, fbVars}) = do
+  params <- collectPOUParams tenv fbVars
   let fsArgsMap :: M.Map Text ParamInfo
       fsArgsMap =
         M.fromList
