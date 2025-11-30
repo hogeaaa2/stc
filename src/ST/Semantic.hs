@@ -1253,7 +1253,7 @@ inferType env = \case
     -- 束縛済み型変数に従って「戻り値」を具体型に落とす（未束縛ならエラー）
     case fsRet of
       Nothing -> VEither.fromLeft $ NoReturnValue (sourceNameOf fn) fname
-      Just rSig -> instantiateSigTyRet tenv subst fname rSig
+      Just rSig -> instantiateSigTyRet subst fname rSig
   EBit e pa -> inferPartialAccess env e pa
   where
     eqLike ta tb =
@@ -1381,8 +1381,8 @@ inferType env = \case
         _ -> VEither.fromLeft $ TypeMismatch' tb0
 
     inferPartialAccess :: Env -> Expr -> PartialAccess -> VEither e STType
-    inferPartialAccess env e pa = do
-      tBase <- inferType env e
+    inferPartialAccess env' e pa = do
+      tBase <- inferType env' e
       let sp = spanOfExpr e -- or spanOfExpr (EBit e pa), どっちでもOK
           vname = baseNameOfExpr e -- "By" / "Do" / "Lw" など
           badAnyBit = VEither.fromLeft $ NotAnAnyBit sp tBase
@@ -2451,32 +2451,12 @@ gstMember tenv ty0 gst = do
     GSTAnyDate -> isDateFamily ty
     GSTAnyDuration -> isDurationFamily ty
 
--- SigTy を具体型に落とす
-instantiateSigTy ::
-  TypeEnv -> TVSubst -> SigTy -> VEither e STType
-instantiateSigTy _ _ (SigMono t) = pure t
-instantiateSigTy _tenv subst (SigGen gst tv) =
-  case M.lookup tv subst of
-    Just t -> pure t
-    Nothing -> pure (defaultForGST gst)
-  where
-    -- 未束縛TVに対するデフォルト代表（実際ほぼ来ない想定）
-    defaultForGST = \case
-      GSTAny -> INT
-      GSTAnyInt -> INT
-      GSTAnyNum -> INT
-      GSTAnyReal -> REAL
-      GSTAnyBit -> BOOL
-      GSTAnyString -> STRING Nothing
-      GSTAnyDate -> DATE
-      GSTAnyDuration -> TIME
-
 -- 戻り値位置専用：未束縛TVなら UnsupportedGenericReturn を投げる
 instantiateSigTyRet ::
   (UnsupportedGenericReturn :| e) =>
-  TypeEnv -> TVSubst -> POUName -> SigTy -> VEither e STType
-instantiateSigTyRet _ _ _ (SigMono t) = pure t
-instantiateSigTyRet _ subst fname (SigGen _gst tv) =
+  TVSubst -> POUName -> SigTy -> VEither e STType
+instantiateSigTyRet _ _ (SigMono t) = pure t
+instantiateSigTyRet subst fname (SigGen _gst tv) =
   case M.lookup tv subst of
     Just t -> pure t
     Nothing -> VEither.fromLeft (UnsupportedGenericReturn fname)
