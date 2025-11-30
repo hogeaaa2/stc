@@ -52,30 +52,27 @@ elaborateProjectTest fenv srcs =
       elaborateUnits fenv us
 
 elaborateUnitTest :: Unit -> VEither AllErrs Unit
-elaborateUnitTest = elaborateUnitWithDecls M.empty
+elaborateUnitTest u =
+  case elaborateUnits M.empty [u] of
+    VRight [u'] -> VRight u'
+    VRight us ->
+      -- 想定外パターンなのでテストヘルパとしては落としてOK
+      error $
+        "elaborateUnitTest: expected exactly 1 unit, got "
+          <> show (length us)
+    VLeft e -> VLeft e
 
 elaborateProgramTest :: Program -> VEither AllErrs Program
-elaborateProgramTest = elaborateProgramTestWithTypes M.empty
-
-elaborateProgramTestWithTypes :: FuncEnv -> Program -> VEither AllErrs Program
-elaborateProgramTestWithTypes fenv prog =
-  case elaborateUnitWithDecls fenv (UProgram prog) of
-    VRight (UProgram p') -> VRight p'
-    VRight _ ->
-      -- 基本ここには来ない想定だけど、一応保険
-      error "elaborateProgramTestWithFuns: unexpected error"
-    VLeft e -> VLeft e
+elaborateProgramTest p = do
+  res <- elaborateUnitTest (UProgram p)
+  case res of
+    UProgram p' -> VRight p'
+    _ -> error "not a Program"
 
 expectParsed :: Text -> (Program -> Expectation) -> Expectation
 expectParsed src k = case parseProgram src of
   Left e -> expectationFailure (show e)
   Right p -> k p
-
-expectParsedUnit :: Text -> (Unit -> Expectation) -> Expectation
-expectParsedUnit src k =
-  case parseUnit' src of
-    Left e -> expectationFailure (show e)
-    Right u -> k u
 
 -- | open-sum の Left から、指定エラー型だけを引き抜く（あるなら Just）
 --   ※ Vary のプロジェクタ名が環境で違う場合はここを書き換えるだけでOK
@@ -87,11 +84,6 @@ shouldSucceedV :: VEither es a -> Expectation
 shouldSucceedV = \case
   VRight _ -> pure ()
   VLeft _ -> expectationFailure "expected VRight, got VLeft"
-
--- shouldFailV :: VEither es a -> Expectation
--- shouldFailV v = case v of
---   VLeft _ -> pure ()
---   VRight _ -> expectationFailure "expected VLeft, got VRight"
 
 -- 失敗（中身も検査）
 shouldFailWithDetail ::
@@ -156,6 +148,18 @@ expectUnitFailWithDetail src pred' =
 -- FunEnv / elaborateUnitWithFuns を前提にした Unit 用ヘルパ
 -- （ST.Semantic から FunEnv, FunSig, elaborateUnitWithFuns を import 済み想定）
 
+-- テスト専用：1個だけ Unit を elaborate して Unit に戻す
+elaborateSingleUnitWithMode ::
+  SemMode -> FuncEnv -> Unit -> VEither AllErrs Unit
+elaborateSingleUnitWithMode mode fenv u =
+  case elaborateUnitsWithMode mode fenv [u] of
+    VLeft e -> VLeft e
+    VRight [u'] -> VRight u'
+    VRight us ->
+      error $
+        "elaborateSingleUnitWithMode: expected exactly 1 unit, got "
+          <> show (length us)
+
 -- 成功を期待（関数シグネチャ付き）
 expectUnitPassWithFuns :: FuncEnv -> Text -> Expectation
 expectUnitPassWithFuns funs src =
@@ -163,7 +167,7 @@ expectUnitPassWithFuns funs src =
     Left e -> expectationFailure (show e)
     Right u ->
       let v :: VEither AllErrs Unit
-          v = elaborateUnitWithDecls funs u
+          v = elaborateSingleUnitWithMode CodesysLike funs u
        in shouldSucceedV v
 
 -- 失敗を期待（型だけ指定、詳細は見ない）
@@ -176,7 +180,7 @@ expectUnitFailWithFuns funs src =
     Left e -> expectationFailure (show e)
     Right u ->
       let v :: VEither AllErrs Unit
-          v = elaborateUnitWithDecls funs u
+          v = elaborateSingleUnitWithMode CodesysLike funs u
        in shouldFail @err v
 
 -- 失敗を期待（この型で、かつ中身も predicate でチェック）
@@ -189,7 +193,7 @@ expectUnitFailWithDetailWithFuns funs src pred' =
     Left e -> expectationFailure (show e)
     Right u ->
       let v :: VEither AllErrs Unit
-          v = elaborateUnitWithDecls funs u
+          v = elaborateSingleUnitWithMode CodesysLike funs u
        in shouldFailWithDetail @err v pred'
 
 -- Units版

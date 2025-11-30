@@ -7,11 +7,7 @@
 
 module ST.Semantic
   ( elaborateUnits,
-    elaborateUnitWithDecls,
-    elaborateUnitsWithDecls,
     elaborateUnitsWithMode,
-    typeEnvFromUnits,
-    funcEnvFromUnits,
     nominalEq,
     FuncEnv,
     FuncSig (..),
@@ -227,7 +223,6 @@ data UnknownFunction = UnknownFunction POUName Span deriving (Eq, Show)
 
 data BadArgCount = BadArgCount POUName Span ExpectedElems ActualElems deriving (Eq, Show)
 
--- ArgPos は 1 始まりの実引数位置
 data ArgTypeMismatch = ArgTypeMismatch POUName (Maybe ArgName) ArgPos ExpectedSTType ActualSTType Span deriving (Eq, Show)
 
 data UnknownArgName = UnknownArgName POUName ArgName Span deriving (Eq, Show) -- 関数名, 未知の引数名
@@ -314,10 +309,6 @@ elaborateUnits ::
 elaborateUnits baseFenvc us = do
   elaborateUnitsWithMode CodesysLike baseFenvc us
 
-elaborateUnitsWithDecls ::
-  TypeEnv -> FuncEnv -> Units -> VEither AllErrs Units
-elaborateUnitsWithDecls tenv fenv = traverse (elaborateUnit CodesysLike tenv M.empty fenv)
-
 elaborateUnitsWithMode ::
   SemMode -> FuncEnv -> Units -> VEither AllErrs Units
 elaborateUnitsWithMode mode baseFenv us = do
@@ -325,53 +316,6 @@ elaborateUnitsWithMode mode baseFenv us = do
   gvenv <- globalVarEnvFromUnits tenv us
   fenv <- funcEnvFromUnits tenv baseFenv us
   traverse (elaborateUnit mode tenv gvenv fenv) us
-
--- - TYPE を解決して tenv 作る
--- - その結果を Unit に反映
--- - funcEnvFromUnit で baseFenv + ユーザー定義POU の FuncEnv を作る
--- - レイヤーB elaborateUnit で本体チェック
-elaborateUnitWithDecls ::
-  FuncEnv ->
-  Unit ->
-  VEither AllErrs Unit
-elaborateUnitWithDecls baseFenv u0 = do
-  -- 1. この Unit 内の TYPE 群を抽出
-  let tys = case u0 of UType tds -> tds; _ -> []
-  -- 2. TYPE 相互参照解決用の一時環境（この Unit の宣言のみ）
-  let tenv0 = typeEnvOf tys
-  -- 3. 各 TYPE の本体を解決して正規化
-  tys' <- traverse (elabTypeDecl tenv0) tys
-  -- 4. 正規化済み TYPE から最終 TypeEnv を構築
-  let tenv = typeEnvOf tys'
-  -- 5. 元の Unit を、解決済み TYPE に差し替え
-  let u1 = case u0 of UType _ -> UType tys'; other -> other
-  -- 6. この Unit 内の FUNCTION / FB から FuncEnv を拡張
-  fenv <- funcEnvFromUnit tenv baseFenv u1
-  -- 7. 既存の tenv / fenv で Unit を elaborate（Program/Function 本体検査）
-  elaborateUnit CodesysLike tenv M.empty fenv u1
-
--- TypeDecl の本体を resolve
-elabTypeDecl ::
-  ( TypeCycle :| e,
-    UnknownType :| e
-  ) =>
-  TypeEnv -> TypeDecl -> VEither e TypeDecl
-elabTypeDecl tenv0 (TypeDecl n t) =
-  TypeDecl n <$> resolveType tenv0 t
-
--- -- 解決済み TypeEnv を使って、UType の中身だけを差し替える（名前照合）
--- rewriteUnitTypes :: TypeEnv -> Unit -> Unit
--- rewriteUnitTypes tenv = \case
---   UType tds ->
---     UType
---       [ TypeDecl n (fromMaybe t (M.lookup (locVal n) tenv))
---       | TypeDecl n t <- tds
---       ]
---   other -> other
-
--- -- 複数ファイル（[Unit]）なら map するだけ
--- rewriteUnitsTypes :: TypeEnv -> [Unit] -> [Unit]
--- rewriteUnitsTypes tenv = map (rewriteUnitTypes tenv)
 
 elaborateUnit ::
   SemMode -> TypeEnv -> GlobalVarEnv -> FuncEnv -> Unit -> VEither AllErrs Unit
