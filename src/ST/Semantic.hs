@@ -538,46 +538,7 @@ insertVar m v = do
           m
 
 elaborateFunction ::
-  ( UnsupportedGenericReturn :| e,
-    DuplicateVar :| e,
-    OutOfRange :| e,
-    TypeMismatch :| e,
-    TypeMismatch' :| e,
-    InvalidCaseRange :| e,
-    AssignToLoopVar :| e,
-    OverlappingCase :| e,
-    UnknownVar :| e,
-    AssignToConst :| e,
-    UnknownStructMember :| e,
-    NotAStruct :| e,
-    BadIndexCount :| e,
-    WhyDidYouComeHere :| e,
-    UnknownEnumMember :| e,
-    NotAnEnum :| e,
-    NotAnArray :| e,
-    IndexOutOfBounds :| e,
-    NonConstantExpr :| e,
-    UnknownFunction :| e,
-    ArgTypeMismatch :| e,
-    UnknownArgName :| e,
-    DuplicateArgName :| e,
-    PositionalAfterNamed :| e,
-    BadArgCount :| e,
-    MissingReturn :| e,
-    TypeCycle :| e,
-    UnknownType :| e,
-    NoReturnValue :| e,
-    InOutArgNotLValue :| e,
-    AssignToInput :| e,
-    FBNotInstantiated :| e,
-    FBUsedAsExpr :| e,
-    InternalError :| e,
-    UnknownFBMember :| e,
-    ArgDirectionMismatch :| e,
-    AssignToFBField :| e,
-    NotAnAnyBit :| e
-  ) =>
-  SemMode -> TypeEnv -> GlobalVarEnv -> FuncEnv -> Function -> VEither e Function
+  SemMode -> TypeEnv -> GlobalVarEnv -> FuncEnv -> Function -> VEither AllErrs Function
 elaborateFunction mode tenv gvenv fenv fn = do
   let fname = locVal $ funcName fn
       fvds = funcVars fn
