@@ -420,11 +420,7 @@ elaborateFunctionBlock mode tenv fenv (FunctionBlock fname vds body) = do
       unless (Set.null missing) $
         VEither.fromLeft (MissingFBOutputs (locVal fname) missing)
     CodesysLike -> pure () -- INPUT 書き込みは許容、OUT 全経路チェックもしない
-
-  -- 5) 本文の型チェック／検査（あるなら実行。無ければそのまま返す）
-  -- 既に elabStmt / elabStmts があるなら有効化して:
-  -- body' <- traverse (elabStmt env) body
-  -- pure $ FunctionBlock fname (VarDecls vs1) body'
+  mapM_ (checkStmt env) body
   pure $ FunctionBlock fname vs1 body
   where
     stmtAssignsTo :: Text -> Statement -> Bool
@@ -2024,15 +2020,20 @@ checkStmt env = \case
               then VRight ()
               else VEither.fromLeft $ TypeMismatch (lvalueRootName lv) (spanOfExpr e) tl tr
 
-        when (envMode env == Strict) $
-          case baseVarName lv of
-            Just n ->
-              case M.lookup n (envVars env) of
-                Just vi
-                  | viKind vi == VKInput ->
-                      VEither.fromLeft (AssignToInput (sourceNameOf $ fromLValue lv) n)
-                _ -> pure ()
-            Nothing -> pure ()
+        case baseVarName lv of
+          Just n ->
+            case M.lookup n (envVars env) of
+              Just vi
+                -- ① CONSTANT ならモードに関係なく常に禁止
+                | viConst vi -> VEither.fromLeft $ AssignToConst n (spanOfLValue lv)
+                -- ② Strict モードで VAR_INPUT なら禁止
+                | envMode env == Strict,
+                  viKind vi == VKInput ->
+                    VEither.fromLeft
+                      (AssignToInput (sourceNameOf $ fromLValue lv) n)
+              _ -> pure ()
+          Nothing ->
+            pure ()
   If c0 th0 elsifs els -> do
     t0 <- inferType env c0
     if t0 == BOOL

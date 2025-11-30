@@ -2855,3 +2855,79 @@ main = hspec $ do
         M.empty
         [fbArray, prog]
         (\(AssignToFBField _ v _m) -> v == "f")
+
+  describe "POU VAR_* semantics" $ do
+    it "allows assignment to plain VAR in both Strict and CodesysLike modes" $ do
+      let srcs :: [Text]
+          srcs =
+            [ T.unlines
+                [ "FUNCTION_BLOCK FB1",
+                  "VAR",
+                  "  x : INT;",
+                  "  y : INT;",
+                  "END_VAR",
+                  "",
+                  "x := y;   (* OK *)"
+                ]
+            ]
+      -- Strict でも CodesysLike でも通るべき
+      expectUnitsPassWithMode Strict M.empty srcs
+      expectUnitsPassWithMode CodesysLike M.empty srcs
+
+    it "rejects assignment to VAR_INPUT in Strict mode, but allows it in CodesysLike mode" $ do
+      let srcs :: [Text]
+          srcs =
+            [ T.unlines
+                [ "FUNCTION_BLOCK FB1",
+                  "VAR_INPUT",
+                  "  i1 : INT;",
+                  "END_VAR",
+                  "",
+                  "VAR",
+                  "  x : INT;",
+                  "END_VAR",
+                  "",
+                  "x := i1;   (* OK *)",
+                  "i1 := x;   (* NG in Strict *)"
+                ]
+            ]
+
+      expectUnitsFailWithDetailWithMode
+        @AssignToInput
+        Strict
+        M.empty
+        srcs
+        (const True)
+      expectUnitsPassWithMode CodesysLike M.empty srcs
+
+    it "rejects assignment to CONSTANT variables in both modes" $ do
+      let srcs :: [Text]
+          srcs =
+            [ T.unlines
+                [ "FUNCTION_BLOCK FB1",
+                  "VAR CONSTANT",
+                  "  c : INT := 1;",
+                  "END_VAR",
+                  "",
+                  "VAR",
+                  "  x : INT;",
+                  "END_VAR",
+                  "",
+                  "x := c;   (* OK *)",
+                  "c := x;   (* NG in both modes *)"
+                ]
+            ]
+
+      expectUnitsFailWithDetailWithMode
+        @AssignToConst
+        Strict
+        M.empty
+        srcs
+        (const True)
+
+      expectUnitsFailWithDetailWithMode
+        @AssignToConst
+        CodesysLike
+        M.empty
+        srcs
+        (const True)
