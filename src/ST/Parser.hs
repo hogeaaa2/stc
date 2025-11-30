@@ -753,8 +753,41 @@ pPostfixE :: Expr -> Parser Expr
 pPostfixE = go
   where
     go e = do
-      m <- optional (choice [field e, index e])
+      m <- optional (choice [partialAccess e, field e, index e])
       maybe (pure e) go m
+
+    -- 部分アクセス: .7 / .%X7 / .%B3 / .%W1 / .%D0
+    partialAccess :: Expr -> Parser Expr
+    partialAccess e' =
+      choice
+        [ paPercent e',
+          paIndexPlain e'
+        ]
+
+    -- .%Xn / .%Bn / .%Wn / .%Dn
+    paPercent :: Expr -> Parser Expr
+    paPercent e' = lexeme . try $ do
+      _ <- char '.'
+      _ <- char '%'
+      c <- oneOf ['X', 'x', 'B', 'b', 'W', 'w', 'D', 'd']
+      n <- L.decimal
+      let pa =
+            case toUpper c of
+              'X' -> PAIndex n
+              'B' -> PAByte n
+              'W' -> PAWord n
+              'D' -> PADword n
+              _ -> PAIndex n -- 来ないはず
+      pure (EBit e' pa)
+
+    -- .<digits> → PAIndex
+    paIndexPlain :: Expr -> Parser Expr
+    paIndexPlain e' = lexeme . try $ do
+      _ <- char '.'
+      d0 <- digitChar
+      ds <- many digitChar
+      let n = read (d0 : ds)
+      pure (EBit e' (PAIndex n))
 
     field e' = do
       dot1

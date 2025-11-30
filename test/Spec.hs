@@ -105,6 +105,7 @@ stripExpr =
     EStructAgg flds ->
       let norm = [(toIdent (locVal nm), stripExpr e) | (nm, e) <- flds]
        in EStructAgg (sortOn (locVal . fst) norm)
+    EBit e pa -> EBit (stripExpr e) pa
 
 stripLValue :: LValue -> LValue
 stripLValue =
@@ -1321,3 +1322,166 @@ main = hspec $ do
       other ->
         expectationFailure $
           "unexpected units: " <> show other
+
+  describe "ANY_BIT partial access (parsing)" $ do
+    -- By.7 → EBit (EVar "By") (PAIndex 7)
+    it "parses By.7 as EBit (EVar By) (PAIndex 7)" $ do
+      let srcProg =
+            "PROGRAM P\n\
+            \VAR\n\
+            \  Byt : BYTE;\n\
+            \  Bo : BOOL;\n\
+            \END_VAR\n\
+            \Bo := Byt.7;\n"
+      expectParsedUnits [srcProg] $ \case
+        [UProgram (Program _ _ [stmt])] ->
+          case stmt of
+            Assign (LVar bo) rhs -> do
+              locVal bo `shouldBe` "Bo"
+              case rhs of
+                EBit (EVar by) (PAIndex 7) ->
+                  locVal by `shouldBe` "Byt"
+                other ->
+                  expectationFailure $
+                    "expected EBit (EVar By) (PAIndex 7), got: " <> show other
+            other ->
+              expectationFailure $
+                "expected Assign Bo := ..., got: " <> show other
+        other ->
+          expectationFailure $
+            "unexpected units: " <> show other
+
+    -- By.%X0 → EBit (EVar "By") (PAIndex 0)
+    it "parses By.%X0 as EBit (EVar By) (PAIndex 0)" $ do
+      let srcProg =
+            "PROGRAM P\n\
+            \VAR\n\
+            \  Byt : BYTE;\n\
+            \  Bo : BOOL;\n\
+            \END_VAR\n\
+            \Bo := Byt.%X0;\n"
+      expectParsedUnits [srcProg] $ \case
+        [UProgram (Program _ _ [stmt])] ->
+          case stmt of
+            Assign (LVar bo) rhs -> do
+              locVal bo `shouldBe` "Bo"
+              case rhs of
+                EBit (EVar by) (PAIndex 0) ->
+                  locVal by `shouldBe` "Byt"
+                other ->
+                  expectationFailure $
+                    "expected EBit (EVar By) (PAIndex 0), got: " <> show other
+            other ->
+              expectationFailure $
+                "expected Assign Bo := ..., got: " <> show other
+        other ->
+          expectationFailure $
+            "unexpected units: " <> show other
+
+    -- Do.%B3 → EBit (EVar "Do") (PAByte 3)
+    it "parses Do.%B3 as EBit (EVar Do) (PAByte 3)" $ do
+      let srcProg =
+            "PROGRAM P\n\
+            \VAR\n\
+            \  Dw : DWORD;\n\
+            \  Byt : BYTE;\n\
+            \END_VAR\n\
+            \Byt := Dw.%B3;\n"
+      expectParsedUnits [srcProg] $ \case
+        [UProgram (Program _ _ [stmt])] ->
+          case stmt of
+            Assign (LVar by) rhs -> do
+              locVal by `shouldBe` "Byt"
+              case rhs of
+                EBit (EVar d) (PAByte 3) ->
+                  locVal d `shouldBe` "Dw"
+                other ->
+                  expectationFailure $
+                    "expected EBit (EVar Dw) (PAByte 3), got: " <> show other
+            other ->
+              expectationFailure $
+                "expected Assign By := ..., got: " <> show other
+        other ->
+          expectationFailure $
+            "unexpected units: " <> show other
+
+    -- DWORD の WORD 読み: Dw.%W1 → PAWord 1
+    it "parses Dw.%W1 on DWORD as EBit (EVar Dw) (PAWord 1)" $ do
+      let srcProg =
+            "PROGRAM P\n\
+            \VAR\n\
+            \  Dw : DWORD;\n\
+            \  Wo : WORD;\n\
+            \END_VAR\n\
+            \Wo := Dw.%W1;\n"
+      expectParsedUnits [srcProg] $ \case
+        [UProgram (Program _ _ [stmt])] ->
+          case stmt of
+            Assign (LVar wo) rhs -> do
+              locVal wo `shouldBe` "Wo"
+              case rhs of
+                EBit (EVar dw) (PAWord 1) ->
+                  locVal dw `shouldBe` "Dw"
+                other ->
+                  expectationFailure $
+                    "expected EBit (EVar Dw) (PAWord 1), got: " <> show other
+            other ->
+              expectationFailure $
+                "expected Assign Wo := ..., got: " <> show other
+        other ->
+          expectationFailure $
+            "unexpected units: " <> show other
+
+    -- LWORD の WORD 読み: Lw.%W3 → PAWord 3
+    it "parses Lw.%W3 on LWORD as EBit (EVar Lw) (PAWord 3)" $ do
+      let srcProg =
+            "PROGRAM P\n\
+            \VAR\n\
+            \  Lw : LWORD;\n\
+            \  Wo : WORD;\n\
+            \END_VAR\n\
+            \Wo := Lw.%W3;\n"
+      expectParsedUnits [srcProg] $ \case
+        [UProgram (Program _ _ [stmt])] ->
+          case stmt of
+            Assign (LVar wo) rhs -> do
+              locVal wo `shouldBe` "Wo"
+              case rhs of
+                EBit (EVar lw) (PAWord 3) ->
+                  locVal lw `shouldBe` "Lw"
+                other ->
+                  expectationFailure $
+                    "expected EBit (EVar Lw) (PAWord 3), got: " <> show other
+            other ->
+              expectationFailure $
+                "expected Assign Wo := ..., got: " <> show other
+        other ->
+          expectationFailure $
+            "unexpected units: " <> show other
+
+    -- LWORD の DWORD 読み: Lw.%D0 → PADword 0
+    it "parses Lw.%D0 on LWORD as EBit (EVar Lw) (PADword 0)" $ do
+      let srcProg =
+            "PROGRAM P\n\
+            \VAR\n\
+            \  Lw : LWORD;\n\
+            \  Dw : DWORD;\n\
+            \END_VAR\n\
+            \Dw := Lw.%D0;\n"
+      expectParsedUnits [srcProg] $ \case
+        [UProgram (Program _ _ [stmt])] ->
+          case stmt of
+            Assign (LVar dw) rhs -> do
+              locVal dw `shouldBe` "Dw"
+              case rhs of
+                EBit (EVar lw) (PADword 0) ->
+                  locVal lw `shouldBe` "Lw"
+                other ->
+                  expectationFailure $
+                    "expected EBit (EVar Lw) (PADword 0), got: " <> show other
+            other ->
+              expectationFailure $
+                "expected Assign Dw := ..., got: " <> show other
+        other ->
+          expectationFailure $
+            "unexpected units: " <> show other

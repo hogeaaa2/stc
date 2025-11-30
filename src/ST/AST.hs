@@ -28,6 +28,7 @@ module ST.AST
     FunctionBlock (..),
     CallBind (..),
     VarRetain (..),
+    PartialAccess (..),
   )
 where
 
@@ -215,6 +216,7 @@ data Expr
   | EDT DateTime
   | ELDT DateTime
   | ECall Identifier [CallArg]
+  | EBit Expr PartialAccess
   deriving (Eq, Show)
 
 data ConstVal
@@ -296,4 +298,11 @@ data GSTType
   | GSTAnyString
   | GSTAnyDate
   | GSTAnyDuration
+  deriving (Eq, Show)
+
+data PartialAccess
+  = PAIndex Int -- .7 や .%X7
+  | PAByte Int -- .%B3  (BYTE単位)
+  | PAWord Int -- .%W1  (WORD単位)
+  | PADword Int -- .%D0  (DWORD単位)
   deriving (Eq, Show)

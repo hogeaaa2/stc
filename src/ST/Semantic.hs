@@ -61,6 +61,7 @@ module ST.Semantic
     ArgDirectionMismatch (..),
     InternalError (..),
     AssignToFBField (..),
+    NotAnAnyBit (..),
   )
 where
 
@@ -259,6 +260,8 @@ data ArgDirectionMismatch = ArgDirectionMismatch POUName ArgName ParamDirKind Te
 
 data AssignToFBField = AssignToFBField FilePath VariableName MemberName deriving (Eq, Show)
 
+data NotAnAnyBit = NotAnAnyBit Span ActualSTType deriving (Eq, Show)
+
 type AllErrs =
   [ AssignToConst,
     AssignToLoopVar,
@@ -301,7 +304,8 @@ type AllErrs =
     UnknownFBMember,
     MissingFBOutputs,
     ArgDirectionMismatch,
-    AssignToFBField
+    AssignToFBField,
+    NotAnAnyBit
   ]
 
 elaborateUnits ::
@@ -570,7 +574,8 @@ elaborateFunction ::
     InternalError :| e,
     UnknownFBMember :| e,
     ArgDirectionMismatch :| e,
-    AssignToFBField :| e
+    AssignToFBField :| e,
+    NotAnAnyBit :| e
   ) =>
   SemMode -> TypeEnv -> GlobalVarEnv -> FuncEnv -> Function -> VEither e Function
 elaborateFunction mode tenv gvenv fenv fn = do
@@ -1073,7 +1078,9 @@ inferType ::
     FBNotInstantiated :| e,
     FBUsedAsExpr :| e,
     InternalError :| e,
-    UnknownFBMember :| e
+    UnknownFBMember :| e,
+    NotAnAnyBit :| e,
+    OutOfRange :| e
   ) =>
   Env ->
   Expr ->
@@ -1286,6 +1293,7 @@ inferType env = \case
     case fsRet of
       Nothing -> VEither.fromLeft $ NoReturnValue (sourceNameOf fn) fname
       Just rSig -> instantiateSigTyRet tenv subst fname rSig
+  EBit e pa -> inferPartialAccess env e pa
   where
     eqLike ta tb =
       if nominalEq (envTypes env) ta tb
@@ -1411,6 +1419,44 @@ inferType env = \case
         _ | isBitString ta && ta == tb -> VRight ta
         _ -> VEither.fromLeft $ TypeMismatch' tb0
 
+    inferPartialAccess :: Env -> Expr -> PartialAccess -> VEither e STType
+    inferPartialAccess env e pa = do
+      tBase <- inferType env e
+      let sp = spanOfExpr e -- or spanOfExpr (EBit e pa), どっちでもOK
+          vname = baseNameOfExpr e -- "By" / "Do" / "Lw" など
+          badAnyBit = VEither.fromLeft $ NotAnAnyBit sp tBase
+          outOfRange n = VEither.fromLeft $ OutOfRange vname tBase (fromIntegral n) sp
+
+      case pa of
+        PAIndex n ->
+          case bitWidthOf tBase of
+            Nothing -> badAnyBit
+            Just w ->
+              if 0 <= n && n < w
+                then pure BOOL
+                else outOfRange n
+        PAByte n ->
+          case byteCountOf tBase of
+            Nothing -> badAnyBit
+            Just cnt ->
+              if 0 <= n && n < cnt
+                then pure BYTE
+                else outOfRange n
+        PAWord n ->
+          case wordCountOf tBase of
+            Nothing -> badAnyBit
+            Just cnt ->
+              if 0 <= n && n < cnt
+                then pure WORD
+                else outOfRange n
+        PADword n ->
+          case dwordCountOf tBase of
+            Nothing -> badAnyBit
+            Just cnt ->
+              if 0 <= n && n < cnt
+                then pure DWORD
+                else outOfRange n
+
 assignArgs ::
   forall e.
   ( UnknownArgName :| e,
@@ -1514,7 +1560,9 @@ lvalueType ::
     FBNotInstantiated :| e,
     FBUsedAsExpr :| e,
     InternalError :| e,
-    UnknownFBMember :| e
+    UnknownFBMember :| e,
+    NotAnAnyBit :| e,
+    OutOfRange :| e
   ) =>
   Env ->
   STType ->
@@ -1595,7 +1643,8 @@ elabVar ::
     FBNotInstantiated :| e,
     FBUsedAsExpr :| e,
     InternalError :| e,
-    UnknownFBMember :| e
+    UnknownFBMember :| e,
+    NotAnAnyBit :| e
   ) =>
   Env -> Variable -> VEither e Variable
 elabVar env v =
@@ -1644,7 +1693,8 @@ checkExprAssignable ::
     FBNotInstantiated :| e,
     FBUsedAsExpr :| e,
     InternalError :| e,
-    UnknownFBMember :| e
+    UnknownFBMember :| e,
+    NotAnAnyBit :| e
   ) =>
   Env ->
   -- | tgt: 左辺の期待型（宣言型）
@@ -1709,7 +1759,8 @@ checkArrayAggInit ::
     FBNotInstantiated :| e,
     FBUsedAsExpr :| e,
     InternalError :| e,
-    UnknownFBMember :| e
+    UnknownFBMember :| e,
+    NotAnAnyBit :| e
   ) =>
   Env ->
   Identifier -> -- 変数名（診断用）
@@ -1772,7 +1823,8 @@ checkStructAggInit ::
     FBNotInstantiated :| e,
     FBUsedAsExpr :| e,
     InternalError :| e,
-    UnknownFBMember :| e
+    UnknownFBMember :| e,
+    NotAnAnyBit :| e
   ) =>
   Env ->
   Identifier ->
@@ -1868,7 +1920,8 @@ checkStmt ::
     InternalError :| e,
     UnknownFBMember :| e,
     ArgDirectionMismatch :| e,
-    AssignToFBField :| e
+    AssignToFBField :| e,
+    NotAnAnyBit :| e
   ) =>
   Env ->
   Statement ->
@@ -2631,3 +2684,41 @@ buildPOUVarEnv gvenv =
                     TypeMismatch name sp globalTy localTy
         -- それ以外は従来通り
         _ -> insertVar m v
+
+bitWidthOf :: STType -> Maybe Int
+bitWidthOf = \case
+  BOOL -> Just 1
+  BYTE -> Just 8
+  WORD -> Just 16
+  DWORD -> Just 32
+  LWORD -> Just 64
+  _ -> Nothing
+
+byteCountOf :: STType -> Maybe Int
+byteCountOf = \case
+  BYTE -> Just 1
+  WORD -> Just 2
+  DWORD -> Just 4
+  LWORD -> Just 8
+  _ -> Nothing
+
+wordCountOf :: STType -> Maybe Int
+wordCountOf = \case
+  WORD -> Just 1
+  DWORD -> Just 2
+  LWORD -> Just 4
+  _ -> Nothing
+
+dwordCountOf :: STType -> Maybe Int
+dwordCountOf = \case
+  DWORD -> Just 1
+  LWORD -> Just 2
+  _ -> Nothing
+
+baseNameOfExpr :: Expr -> Text
+baseNameOfExpr = \case
+  EVar i -> locVal i
+  EField e _ -> baseNameOfExpr e
+  EIndex e _ -> baseNameOfExpr e
+  EBit e _ -> baseNameOfExpr e
+  _ -> "" -- 識別子に紐づかない式は空で妥協

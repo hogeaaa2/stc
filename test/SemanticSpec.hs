@@ -3008,3 +3008,176 @@ main = hspec $ do
           name == "g1"
             && expected == INT
             && actual == BOOL
+
+  describe "ANY_BIT partial access (semantics, read-only)" $ do
+    ----------------------------------------------------------------------
+    -- PAIndex: .0 / .7 / .8 など
+    ----------------------------------------------------------------------
+
+    it "allows reading a bit from BYTE (By.0) as BOOL" $ do
+      -- By.0 の型が BOOL とみなされ、Bo: BOOL への代入が通ることを期待
+      let src =
+            "PROGRAM P\n\
+            \VAR\n\
+            \  Byt : BYTE;\n\
+            \  Bo : BOOL;\n\
+            \END_VAR\n\
+            \Bo := Byt.0;\n"
+      expectUnitPass src
+
+    it "rejects assigning a BYTE bit (By.0) into BYTE variable (TypeMismatch)" $ do
+      -- By.0 は BOOL 扱いなので、Bo: BYTE への代入は TypeMismatch になるはず
+      let src =
+            "PROGRAM P\n\
+            \VAR\n\
+            \  Byt : BYTE;\n\
+            \  Bo : BYTE;\n\
+            \END_VAR\n\
+            \Bo := Byt.0;\n"
+      expectUnitFail @TypeMismatch src
+
+    it "rejects out-of-range bit index for BYTE (Byt.8) with OutOfRange" $ do
+      -- BYTE の bit index は 0..7 の想定 → 8 は範囲外
+      let src =
+            "PROGRAM P\n\
+            \VAR\n\
+            \  Byt : BYTE;\n\
+            \  Bo : BOOL;\n\
+            \END_VAR\n\
+            \Bo := Byt.8;\n"
+      expectUnitFailWithDetail @OutOfRange src $ \case
+        OutOfRange v ty n _ ->
+          v == "Byt"
+            && ty == BYTE -- ベース変数名
+            && n == 8 -- ベース型
+            -- 範囲外 index
+
+    ----------------------------------------------------------------------
+    -- PAByte: .%B<n>  → BYTE スライス
+    ----------------------------------------------------------------------
+
+    it "allows reading a BYTE slice from DWORD using %B (Dw.%B3) into BYTE" $ do
+      -- DWORD: 32bit → %B0..%B3 が有効
+      let src =
+            "PROGRAM P\n\
+            \VAR\n\
+            \  Dw : DWORD;\n\
+            \  Byt : BYTE;\n\
+            \END_VAR\n\
+            \Byt := Dw.%B3;\n"
+      expectUnitPass src
+
+    it "rejects out-of-range BYTE slice index for DWORD (Dw.%B4) with OutOfRange" $ do
+      -- DWORD: 4 バイト → %B4 は範囲外
+      let src =
+            "PROGRAM P\n\
+            \VAR\n\
+            \  Dw : DWORD;\n\
+            \  Byt : BYTE;\n\
+            \END_VAR\n\
+            \Byt := Dw.%B4;\n"
+      expectUnitFailWithDetail @OutOfRange src $ \case
+        OutOfRange v ty n _ ->
+          v == "Dw"
+            && ty == DWORD
+            && n == 4 -- 0..3 まで有効、4 は範囲外
+
+    ----------------------------------------------------------------------
+    -- PAWord: .%W<n>  → WORD スライス
+    ----------------------------------------------------------------------
+
+    it "allows reading a WORD slice from DWORD using %W (Dw.%W1) into WORD" $ do
+      -- DWORD: 32bit → %W0..%W1 が有効
+      let src =
+            "PROGRAM P\n\
+            \VAR\n\
+            \  Dw : DWORD;\n\
+            \  Wo : WORD;\n\
+            \END_VAR\n\
+            \Wo := Dw.%W1;\n"
+      expectUnitPass src
+
+    it "rejects out-of-range WORD slice index for DWORD (Dw.%W2) with OutOfRange" $ do
+      -- DWORD: 2 ワード分 → %W2 は範囲外
+      let src =
+            "PROGRAM P\n\
+            \VAR\n\
+            \  Dw : DWORD;\n\
+            \  Wo : WORD;\n\
+            \END_VAR\n\
+            \Wo := Dw.%W2;\n"
+      expectUnitFailWithDetail @OutOfRange src $ \case
+        OutOfRange v ty n _ ->
+          v == "Dw"
+            && ty == DWORD
+            && n == 2 -- 0,1 まで有効
+    it "allows reading a WORD slice from LWORD using %W (Lw.%W3) into WORD" $ do
+      -- LWORD: 64bit → %W0..%W3 が有効
+      let src =
+            "PROGRAM P\n\
+            \VAR\n\
+            \  Lw : LWORD;\n\
+            \  Wo : WORD;\n\
+            \END_VAR\n\
+            \Wo := Lw.%W3;\n"
+      expectUnitPass src
+
+    it "rejects out-of-range WORD slice index for LWORD (Lw.%W4) with OutOfRange" $ do
+      let src =
+            "PROGRAM P\n\
+            \VAR\n\
+            \  Lw : LWORD;\n\
+            \  Wo : WORD;\n\
+            \END_VAR\n\
+            \Wo := Lw.%W4;\n"
+      expectUnitFailWithDetail @OutOfRange src $ \case
+        OutOfRange v ty n _ ->
+          v == "Lw"
+            && ty == LWORD
+            && n == 4 -- 0..3 まで有効
+
+    ----------------------------------------------------------------------
+    -- PADword: .%D<n>  → DWORD スライス（LWORD 限定）
+    ----------------------------------------------------------------------
+
+    it "allows reading a DWORD slice from LWORD using %D (Lw.%D0) into DWORD" $ do
+      -- LWORD: 64bit → %D0..%D1 が有効
+      let src =
+            "PROGRAM P\n\
+            \VAR\n\
+            \  Lw : LWORD;\n\
+            \  Dw : DWORD;\n\
+            \END_VAR\n\
+            \Dw := Lw.%D0;\n"
+      expectUnitPass src
+
+    it "rejects out-of-range DWORD slice index for LWORD (Lw.%D2) with OutOfRange" $ do
+      let src =
+            "PROGRAM P\n\
+            \VAR\n\
+            \  Lw : LWORD;\n\
+            \  Dw : DWORD;\n\
+            \END_VAR\n\
+            \Dw := Lw.%D2;\n"
+      expectUnitFailWithDetail @OutOfRange src $ \case
+        OutOfRange v ty n _ ->
+          v == "Lw"
+            && ty == LWORD
+            && n == 2 -- 0,1 まで有効
+
+    ----------------------------------------------------------------------
+    -- ANY_BIT じゃない型に対するアクセス
+    ----------------------------------------------------------------------
+
+    it "rejects bit access on non-ANY_BIT type (x.0) with NotABitString" $ do
+      -- x: INT に対する .0 アクセスはエラー
+      let src =
+            "PROGRAM P\n\
+            \VAR\n\
+            \  x  : INT;\n\
+            \  Bo : BOOL;\n\
+            \END_VAR\n\
+            \Bo := x.0;\n"
+      expectUnitFailWithDetail @NotAnAnyBit src $ \case
+        NotAnAnyBit _ actualTy ->
+          actualTy == INT
