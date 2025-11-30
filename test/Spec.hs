@@ -1237,3 +1237,87 @@ main = hspec $ do
         other ->
           expectationFailure $
             "unexpected units: " <> show other
+
+  describe "POU VAR_TEMP sections (parsing)" $ do
+    it "parses VAR_TEMP section in PROGRAM with VKTemp kind" $ do
+      let srcProg =
+            "PROGRAM P\n\
+            \VAR_TEMP\n\
+            \  t1 : INT;\n\
+            \  t2 : BOOL := TRUE;\n\
+            \END_VAR\n"
+      expectParsedUnits [srcProg] $ \case
+        [UProgram (Program _ vds _)] ->
+          case vds of
+            [v1, v2] -> do
+              -- 名前
+              map (locVal . varName) [v1, v2]
+                `shouldBe` ["t1", "t2"]
+
+              -- kind は VKTemp
+              map varKind [v1, v2]
+                `shouldBe` [VKTemp, VKTemp]
+
+              -- 型・初期値
+              varType v1 `shouldBe` INT
+              varInit v1 `shouldBe` Nothing
+
+              varType v2 `shouldBe` BOOL
+              varInit v2 `shouldBe` Just (EBOOL True)
+            _ ->
+              expectationFailure $
+                "expected exactly 2 vars, got " <> show (length vds)
+        other ->
+          expectationFailure $
+            "unexpected units: " <> show other
+
+    it "parses VAR and VAR_TEMP blocks together in PROGRAM" $ do
+      let srcProg =
+            "PROGRAM P\n\
+            \VAR\n\
+            \  x : INT;\n\
+            \END_VAR\n\
+            \VAR_TEMP\n\
+            \  t : INT;\n\
+            \END_VAR\n"
+      expectParsedUnits [srcProg] $ \case
+        [UProgram (Program _ vds _)] ->
+          case vds of
+            [v1, v2] -> do
+              -- 宣言順に x, t が並ぶ
+              map (locVal . varName) [v1, v2]
+                `shouldBe` ["x", "t"]
+
+              varKind v1 `shouldBe` VKLocal
+              varKind v2 `shouldBe` VKTemp
+
+              varType v1 `shouldBe` INT
+              varType v2 `shouldBe` INT
+            _ ->
+              expectationFailure $
+                "expected exactly 2 vars, got " <> show (length vds)
+        other ->
+          expectationFailure $
+            "unexpected units: " <> show other
+
+  it "parses VAR_TEMP in FUNCTION as VKTemp" $ do
+    let srcFun =
+          "FUNCTION F : INT\n\
+          \VAR_TEMP\n\
+          \  t : INT;\n\
+          \END_VAR\n\
+          \t := 1;\n\
+          \F := t;\n"
+    expectParsedUnits [srcFun] $ \case
+      [UFunction (Function _ _ vds _)] ->
+        case vds of
+          [v1] -> do
+            locVal (varName v1) `shouldBe` "t"
+            varKind v1 `shouldBe` VKTemp
+            varType v1 `shouldBe` INT
+          _ ->
+            expectationFailure $
+              "expected exactly 1 temp var, got " <> show (length vds)
+      other ->
+        expectationFailure $
+          "unexpected units: " <> show other

@@ -17,7 +17,7 @@
     * パーサ
 
       * `VAR`, `VAR_INPUT`, `VAR_OUTPUT`, `VAR_IN_OUT`, `VAR_TEMP` を
-        **いまの AST に落とす（= [Variable] に flatten）**
+        **いまの AST に落とす（= [Variable] にhttps://www.youtube.com/watch?v=asfONdPsnw8 flatten）**
       * セクション／宣言単位の `CONSTANT`, `RETAIN/NON_RETAIN` も読んで `Variable` に反映
     * セマンティクス（最小）
 
