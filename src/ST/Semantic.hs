@@ -90,6 +90,8 @@ type FuncEnv = M.Map Text FuncSig
 
 type TVSubst = M.Map TVarId STType
 
+type GlobalVarEnv = VarEnv
+
 -- CodesysLike:
 -- Functionで「到達可能な戻り値代入」が必須ではない（IR木生成側で初期値代入してカバー）
 -- Strict:
@@ -101,6 +103,7 @@ newtype TVarId = TV Int
 
 data Env = Env
   { envTypes :: TypeEnv,
+    envGlobals :: GlobalVarEnv,
     envVars :: VarEnv,
     envFuncs :: FuncEnv,
     envMode :: SemMode
@@ -308,21 +311,20 @@ type AllErrs =
 
 elaborateUnits ::
   FuncEnv -> Units -> VEither AllErrs Units
-elaborateUnits baseFenv us = do
-  tenv <- typeEnvFromUnits us -- 全 TYPE 解決
-  fenv <- funcEnvFromUnits tenv baseFenv us -- 全 FUNCTION/FB を登録
-  traverse (elaborateUnit CodesysLike tenv fenv) us
+elaborateUnits baseFenvc us = do
+  elaborateUnitsWithMode CodesysLike baseFenvc us
 
 elaborateUnitsWithDecls ::
   TypeEnv -> FuncEnv -> Units -> VEither AllErrs Units
-elaborateUnitsWithDecls tenv fenv = traverse (elaborateUnit CodesysLike tenv fenv)
+elaborateUnitsWithDecls tenv fenv = traverse (elaborateUnit CodesysLike tenv M.empty fenv)
 
 elaborateUnitsWithMode ::
   SemMode -> FuncEnv -> Units -> VEither AllErrs Units
 elaborateUnitsWithMode mode baseFenv us = do
   tenv <- typeEnvFromUnits us
+  gvenv <- globalVarEnvFromUnits tenv us
   fenv <- funcEnvFromUnits tenv baseFenv us
-  traverse (elaborateUnit mode tenv fenv) us
+  traverse (elaborateUnit mode tenv gvenv fenv) us
 
 -- - TYPE を解決して tenv 作る
 -- - その結果を Unit に反映
@@ -346,7 +348,7 @@ elaborateUnitWithDecls baseFenv u0 = do
   -- 6. この Unit 内の FUNCTION / FB から FuncEnv を拡張
   fenv <- funcEnvFromUnit tenv baseFenv u1
   -- 7. 既存の tenv / fenv で Unit を elaborate（Program/Function 本体検査）
-  elaborateUnit CodesysLike tenv fenv u1
+  elaborateUnit CodesysLike tenv M.empty fenv u1
 
 -- TypeDecl の本体を resolve
 elabTypeDecl ::
@@ -371,11 +373,12 @@ elabTypeDecl tenv0 (TypeDecl n t) =
 -- rewriteUnitsTypes :: TypeEnv -> [Unit] -> [Unit]
 -- rewriteUnitsTypes tenv = map (rewriteUnitTypes tenv)
 
-elaborateUnit :: SemMode -> TypeEnv -> FuncEnv -> Unit -> VEither AllErrs Unit
-elaborateUnit mode tenv fenv = \case
-  UProgram p -> UProgram <$> elaborateProgram mode tenv fenv p
-  UFunction f -> UFunction <$> elaborateFunction mode tenv fenv f
-  UFunctionBlock fb -> UFunctionBlock <$> elaborateFunctionBlock mode tenv fenv fb
+elaborateUnit ::
+  SemMode -> TypeEnv -> GlobalVarEnv -> FuncEnv -> Unit -> VEither AllErrs Unit
+elaborateUnit mode tenv gvenv fenv = \case
+  UProgram p -> UProgram <$> elaborateProgram mode tenv gvenv fenv p
+  UFunction f -> UFunction <$> elaborateFunction mode tenv gvenv fenv f
+  UFunctionBlock fb -> UFunctionBlock <$> elaborateFunctionBlock mode tenv gvenv fenv fb
   -- TYPE はすでに replaceTypes 済みなのでそのまま
   UType tds -> pure (UType tds)
   UGlobalVars vds -> do
@@ -389,6 +392,7 @@ elaborateUnit mode tenv fenv = \case
     let env =
           Env
             { envTypes = tenv,
+              envGlobals = gvenv,
               envVars = venv,
               envFuncs = fenv,
               envMode = mode
@@ -398,19 +402,19 @@ elaborateUnit mode tenv fenv = \case
 
     pure (UGlobalVars vs1)
 
--- TODO 実装する
 elaborateFunctionBlock ::
-  SemMode -> TypeEnv -> FuncEnv -> FunctionBlock -> VEither AllErrs FunctionBlock
-elaborateFunctionBlock mode tenv fenv (FunctionBlock fname vds body) = do
+  SemMode -> TypeEnv -> GlobalVarEnv -> FuncEnv -> FunctionBlock -> VEither AllErrs FunctionBlock
+elaborateFunctionBlock mode tenv gvenv fenv (FunctionBlock fname vds body) = do
   -- 1) 型解決済み VarDecls へ
   vs0 <- resolveVarTypes tenv vds
 
-  -- 2) VarEnv 構築（重複チェック込み）
-  venv <- foldM insertVar M.empty vs0
+  -- 2) VarEnv 構築（VAR_EXTERNAL を含む）
+  venv <- buildPOUVarEnv gvenv vs0
 
   let env =
         Env
           { envTypes = tenv,
+            envGlobals = gvenv,
             envVars = venv,
             envFuncs = fenv,
             envMode = mode
@@ -539,16 +543,17 @@ elaborateFunctionBlock mode tenv fenv (FunctionBlock fname vds body) = do
 
 -- 旧 elaborateUnit 本体を Program 単位に切り出したもの
 elaborateProgram ::
-  SemMode -> TypeEnv -> FuncEnv -> Program -> VEither AllErrs Program
-elaborateProgram mode tenv fenv (Program n vds body) = do
+  SemMode -> TypeEnv -> GlobalVarEnv -> FuncEnv -> Program -> VEither AllErrs Program
+elaborateProgram mode tenv gvenv fenv (Program n vds body) = do
   -- 型解決済み VarDecls
   vs <- resolveVarTypes tenv vds
-  -- VarEnv 構築（重複チェック込み）
-  venv <- foldM insertVar M.empty vs
+  -- ★ VarEnv 構築（VAR_EXTERNAL は GlobalVarEnv と突き合わせ）
+  venv <- buildPOUVarEnv gvenv vs
 
   let env =
         Env
           { envTypes = tenv,
+            envGlobals = gvenv,
             envVars = venv,
             envFuncs = fenv,
             envMode = mode
@@ -623,8 +628,8 @@ elaborateFunction ::
     ArgDirectionMismatch :| e,
     AssignToFBField :| e
   ) =>
-  SemMode -> TypeEnv -> FuncEnv -> Function -> VEither e Function
-elaborateFunction mode tenv fenv fn = do
+  SemMode -> TypeEnv -> GlobalVarEnv -> FuncEnv -> Function -> VEither e Function
+elaborateFunction mode tenv gvenv fenv fn = do
   let fname = locVal $ funcName fn
       fvds = funcVars fn
       fbody = fBody fn
@@ -634,8 +639,7 @@ elaborateFunction mode tenv fenv fn = do
   -- 変数宣言の型解決
   vs <- resolveVarTypes tenv fvds
 
-  -- VarEnv 構築（DuplicateVar などは insertVar に任せる）
-  venv0 <- foldM insertVar M.empty vs
+  venv0 <- buildPOUVarEnv gvenv vs
 
   -- 暗黙の戻り値変数（関数名と同名）を追加
   -- 既にユーザーが同名を宣言してたらエラーにしてよい（仕様次第）
@@ -657,6 +661,7 @@ elaborateFunction mode tenv fenv fn = do
   let env =
         Env
           { envTypes = tenv,
+            envGlobals = gvenv,
             envVars = venv1,
             envFuncs = fenv,
             envMode = mode
@@ -741,6 +746,27 @@ funcEnvFromUnits ::
   ) =>
   TypeEnv -> FuncEnv -> Units -> VEither e FuncEnv
 funcEnvFromUnits tenv = foldM (funcEnvFromUnit tenv)
+
+globalVarEnvFromUnits ::
+  ( TypeCycle :| e,
+    UnknownType :| e,
+    DuplicateVar :| e
+  ) =>
+  TypeEnv -> Units -> VEither e GlobalVarEnv
+globalVarEnvFromUnits tenv us = do
+  -- 1) 全 UGlobalVars だけ抜き出して [Variable] を平坦化
+  let allGlobals :: [Variable]
+      allGlobals =
+        [ v
+        | UGlobalVars vs <- us,
+          v <- vs
+        ]
+
+  -- 2) 型解決
+  vsResolved <- resolveVarTypes tenv allGlobals
+
+  -- 3) VarEnv 構築（重複チェック込み）
+  foldM insertVar M.empty vsResolved
 
 insertFuncSig ::
   (DuplicateFunction :| e) =>
@@ -2628,3 +2654,36 @@ fbSubfieldTarget env lv = do
               fsKind sig == FKFunctionBlock ->
                 pure (Just (vnm, fmap locVal (lastFieldIdent lv)))
           _ -> pure Nothing
+
+-- POU 用 VarEnv 構築（VAR_EXTERNAL を GlobalVarEnv と突き合わせる）
+buildPOUVarEnv ::
+  ( DuplicateVar :| e,
+    UnknownVar :| e,
+    TypeMismatch :| e
+  ) =>
+  GlobalVarEnv ->
+  [Variable] ->
+  VEither e VarEnv
+buildPOUVarEnv gvenv =
+  foldM step M.empty
+  where
+    step m v =
+      case varKind v of
+        VKExternal -> do
+          let name = locVal (varName v)
+              sp = locSpan (varName v)
+          case M.lookup name gvenv of
+            Nothing ->
+              -- 対応する VAR_GLOBAL がない
+              VEither.fromLeft $ UnknownVar name sp
+            Just gvi -> do
+              let globalTy = viType gvi
+                  localTy = varType v -- resolveVarTypes 済みの想定
+              if localTy == globalTy
+                then insertVar m v
+                else
+                  -- 期待: グローバル宣言の型 / 実際: VAR_EXTERNAL 宣言の型
+                  VEither.fromLeft $
+                    TypeMismatch name sp globalTy localTy
+        -- それ以外は従来通り
+        _ -> insertVar m v

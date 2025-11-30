@@ -2956,3 +2956,51 @@ main = hspec $ do
             ]
       expectUnitsFailWithDetail @DuplicateVar srcs $ \(DuplicateVar name _span) ->
         name == "g1"
+
+  describe "POU VAR_EXTERNAL semantics (link to VAR_GLOBAL)" $ do
+    it "allows VAR_EXTERNAL that matches an existing VAR_GLOBAL (type matches)" $ do
+      let srcGlobal =
+            "VAR_GLOBAL\n\
+            \  g1 : INT;\n\
+            \END_VAR\n"
+          srcProg =
+            "PROGRAM P\n\
+            \VAR_EXTERNAL\n\
+            \  g1 : INT;\n\
+            \END_VAR\n\
+            \g1 := 1;\n"
+          srcs = [srcGlobal, srcProg]
+
+      -- Strict / CodesysLike 両方とも成功すること
+      expectUnitsPassWithMode Strict M.empty srcs
+      expectUnitsPassWithMode CodesysLike M.empty srcs
+
+    it "rejects VAR_EXTERNAL when no matching VAR_GLOBAL exists (UnknownVar)" $ do
+      let srcProg =
+            "PROGRAM P\n\
+            \VAR_EXTERNAL\n\
+            \  g1 : INT;\n\
+            \END_VAR\n\
+            \g1 := 1;\n"
+          srcs = [srcProg]
+
+      expectUnitsFailWithDetail @UnknownVar srcs $ \case
+        UnknownVar name _span -> name == "g1"
+
+    it "rejects VAR_EXTERNAL when its type does not match the VAR_GLOBAL declaration" $ do
+      let srcGlobal =
+            "VAR_GLOBAL\n\
+            \  g1 : INT;\n\
+            \END_VAR\n"
+          srcProg =
+            "PROGRAM P\n\
+            \VAR_EXTERNAL\n\
+            \  g1 : BOOL;\n\
+            \END_VAR\n"
+          srcs = [srcGlobal, srcProg]
+
+      expectUnitsFailWithDetail @TypeMismatch srcs $ \case
+        TypeMismatch name _span expected actual ->
+          name == "g1"
+            && expected == INT
+            && actual == BOOL

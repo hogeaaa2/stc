@@ -1171,3 +1171,69 @@ main = hspec $ do
         other ->
           expectationFailure $
             "expected [UType _, UGlobalVars _], but got: " <> show other
+
+  describe "POU VAR_EXTERNAL sections (parsing)" $ do
+    it "parses VAR_EXTERNAL section in PROGRAM with VKExternal kind" $ do
+      let srcProg =
+            "PROGRAM P\n\
+            \VAR_EXTERNAL\n\
+            \  g1 : INT;\n\
+            \  g2 : BOOL := TRUE;\n\
+            \END_VAR\n"
+      expectParsedUnits [srcProg] $ \case
+        [UProgram (Program _ vds _)] ->
+          case vds of
+            [v1, v2] -> do
+              -- 名前だけまずチェック
+              map (locVal . varName) [v1, v2]
+                `shouldBe` ["g1", "g2"]
+
+              -- 型・初期値・CONST フラグ
+              varType v1 `shouldBe` INT
+              varInit v1 `shouldBe` Nothing
+              varConst v1 `shouldBe` False
+              varKind v1 `shouldBe` VKExternal
+
+              varType v2 `shouldBe` BOOL
+              varInit v2 `shouldBe` Just (EBOOL True)
+              varConst v2 `shouldBe` False
+              varKind v2 `shouldBe` VKExternal
+            _ ->
+              expectationFailure $
+                "expected exactly 2 vars, got " <> show (length vds)
+        other ->
+          expectationFailure $
+            "unexpected units: " <> show other
+
+    it "parses VAR and VAR_EXTERNAL blocks together in PROGRAM" $ do
+      let srcProg =
+            "PROGRAM P\n\
+            \VAR\n\
+            \  x : INT;\n\
+            \END_VAR\n\
+            \VAR_EXTERNAL\n\
+            \  g1 : INT;\n\
+            \END_VAR\n"
+      expectParsedUnits [srcProg] $ \case
+        [UProgram (Program _ vds _)] ->
+          case vds of
+            [v1, v2] -> do
+              -- x, g1 の順で並んでいること
+              map (locVal . varName) [v1, v2]
+                `shouldBe` ["x", "g1"]
+
+              -- x はローカル
+              varKind v1 `shouldBe` VKLocal
+              varType v1 `shouldBe` INT
+              varInit v1 `shouldBe` Nothing
+
+              -- g1 は External
+              varKind v2 `shouldBe` VKExternal
+              varType v2 `shouldBe` INT
+              varInit v2 `shouldBe` Nothing
+            _ ->
+              expectationFailure $
+                "expected exactly 2 vars, got " <> show (length vds)
+        other ->
+          expectationFailure $
+            "unexpected units: " <> show other
