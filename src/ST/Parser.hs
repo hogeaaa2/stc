@@ -128,8 +128,15 @@ pUnit =
     [ UType <$> try pTypeDecl,
       UProgram <$> try pProgram,
       UFunctionBlock <$> try pFunctionBlock,
-      UFunction <$> pFunction
+      UFunction <$> pFunction,
+      UGlobalVars <$> pGlobalVars
     ]
+
+-- Unit レベルの VAR_GLOBAL セクション
+pGlobalVars :: Parser [Variable]
+pGlobalVars = lexeme $ do
+  _ <- symbol "VAR_GLOBAL"
+  manyTill (pVariable VKGlobal False Nothing) (symbol "END_VAR")
 
 pTypeDecl :: Parser [TypeDecl]
 pTypeDecl = lexeme $ do

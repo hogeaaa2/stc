@@ -2931,3 +2931,28 @@ main = hspec $ do
         M.empty
         srcs
         (const True)
+
+  describe "VAR_GLOBAL semantics (minimal)" $ do
+    it "accepts a simple VAR_GLOBAL block (no duplicates)" $ do
+      let srcs =
+            [ T.unlines
+                [ "VAR_GLOBAL",
+                  "  g1 : INT;",
+                  "  g2 : BOOL := TRUE;",
+                  "END_VAR"
+                ]
+            ]
+      expectUnitsPassWithMode Strict M.empty srcs
+      expectUnitsPassWithMode CodesysLike M.empty srcs
+
+    it "rejects duplicate global variable names in VAR_GLOBAL" $ do
+      let srcs =
+            [ T.unlines
+                [ "VAR_GLOBAL",
+                  "  g1 : INT;",
+                  "  g1 : BOOL;",
+                  "END_VAR"
+                ]
+            ]
+      expectUnitsFailWithDetail @DuplicateVar srcs $ \(DuplicateVar name _span) ->
+        name == "g1"

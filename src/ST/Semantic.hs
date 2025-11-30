@@ -378,6 +378,25 @@ elaborateUnit mode tenv fenv = \case
   UFunctionBlock fb -> UFunctionBlock <$> elaborateFunctionBlock mode tenv fenv fb
   -- TYPE はすでに replaceTypes 済みなのでそのまま
   UType tds -> pure (UType tds)
+  UGlobalVars vds -> do
+    -- 1) 型解決（Named MyInt などを展開）
+    vs0 <- resolveVarTypes tenv vds
+
+    -- 2) グローバル用 VarEnv（重複チェック）
+    venv <- foldM insertVar M.empty vs0
+
+    -- 3) 必要なら elabVar で初期化チェック / デフォルト付与
+    let env =
+          Env
+            { envTypes = tenv,
+              envVars = venv,
+              envFuncs = fenv,
+              envMode = mode
+            }
+
+    vs1 <- traverse (elabVar env) vs0
+
+    pure (UGlobalVars vs1)
 
 -- TODO 実装する
 elaborateFunctionBlock ::

@@ -1125,3 +1125,49 @@ main = hspec $ do
         _ ->
           expectationFailure $
             "expected exactly one UFunctionBlock, got: " <> show units
+
+  describe "VAR_GLOBAL parsing" $ do
+    it "parses a single VAR_GLOBAL block as UGlobalVars" $ do
+      let srcs =
+            [ T.unlines
+                [ "VAR_GLOBAL",
+                  "  gInt  : INT;",
+                  "  gBool : BOOL := TRUE;",
+                  "END_VAR"
+                ]
+            ]
+      expectParsedUnits srcs $ \case
+        [UGlobalVars vs] -> do
+          -- 名前 / 型 / 初期値 / CONSTANT フラグ
+          varSigs vs
+            `shouldBe` [ ("gInt", INT, Nothing, False),
+                         ("gBool", BOOL, Just (EBOOL True), False)
+                       ]
+          -- kind は VKGlobal であることも確認
+          map varKind vs `shouldBe` [VKGlobal, VKGlobal]
+        other ->
+          expectationFailure $
+            "expected [UGlobalVars _], but got: " <> show other
+
+    it "parses TYPE and VAR_GLOBAL units in order" $ do
+      let srcs =
+            [ T.unlines
+                ["TYPE MyInt : INT; END_TYPE"],
+              T.unlines
+                [ "VAR_GLOBAL",
+                  "  g1 : MyInt;",
+                  "END_VAR"
+                ]
+            ]
+      expectParsedUnits srcs $ \case
+        [UType tds, UGlobalVars vs] -> do
+          -- TYPE 名の確認
+          map (locVal . typeName) tds `shouldBe` ["MyInt"]
+          -- VAR_GLOBAL の中身は Named MyInt になっているかだけ確認
+          varSigs vs `shouldSatisfy` \case
+            [("g1", Named i, Nothing, False)] -> locVal i == "MyInt"
+            _ -> False
+          map varKind vs `shouldBe` [VKGlobal]
+        other ->
+          expectationFailure $
+            "expected [UType _, UGlobalVars _], but got: " <> show other

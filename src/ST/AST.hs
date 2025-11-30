@@ -98,6 +98,7 @@ data Unit
   | UProgram Program
   | UFunction Function
   | UFunctionBlock FunctionBlock
+  | UGlobalVars [Variable]
   deriving (Eq, Show)
 
 data Function = Function
