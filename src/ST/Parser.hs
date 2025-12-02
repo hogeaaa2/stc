@@ -468,7 +468,9 @@ reserved =
       "BYTE",
       "WORD",
       "DWORD",
-      "LWORD"
+      "LWORD",
+      "REF_TO",
+      "REF"
     ]
 
 withSpan :: Parser a -> Parser (Loc a)
