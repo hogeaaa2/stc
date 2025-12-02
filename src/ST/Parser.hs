@@ -753,7 +753,7 @@ pPostfixE :: Expr -> Parser Expr
 pPostfixE = go
   where
     go e = do
-      m <- optional (choice [partialAccess e, field e, index e])
+      m <- optional (choice [partialAccess e, field e, index e, deref e])
       maybe (pure e) go m
 
     -- 部分アクセス: .7 / .%X7 / .%B3 / .%W1 / .%D0
@@ -793,9 +793,14 @@ pPostfixE = go
       dot1
       EField e' <$> identifier
 
-    index e'' = do
+    index e' = do
       is <- brackets (pExpr `sepBy1` symbol ",")
-      pure (EIndex e'' is)
+      pure (EIndex e' is)
+
+    deref e' = do
+      -- e^ （空白は lexeme に任せる）
+      _ <- lexeme (char '^')
+      pure (EDeref e')
 
 -- フィールド/添字のポストフィックス（左辺用）
 pPostfixL :: LValue -> Parser LValue
@@ -839,6 +844,7 @@ pSTType =
     [ pStructType,
       pEnumType,
       pArrayType,
+      RefTo <$> (symbol "REF_TO" *> pSTType),
       SINT <$ symbol "SINT",
       INT <$ symbol "INT",
       DINT <$ symbol "DINT",

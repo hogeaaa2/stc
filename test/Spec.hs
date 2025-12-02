@@ -106,6 +106,7 @@ stripExpr =
       let norm = [(toIdent (locVal nm), stripExpr e) | (nm, e) <- flds]
        in EStructAgg (sortOn (locVal . fst) norm)
     EBit e pa -> EBit (stripExpr e) pa
+    EDeref e -> EDeref (stripExpr e)
 
 stripLValue :: LValue -> LValue
 stripLValue =
@@ -1482,6 +1483,80 @@ main = hspec $ do
             other ->
               expectationFailure $
                 "expected Assign Dw := ..., got: " <> show other
+        other ->
+          expectationFailure $
+            "unexpected units: " <> show other
+
+  describe "REF_TO type (parsing)" $ do
+    it "parses REF_TO in TYPE declaration" $ do
+      let srcType =
+            "TYPE R : REF_TO INT; END_TYPE\n"
+      expectParsedUnits [srcType] $ \case
+        [UType [TypeDecl nm ty]] -> do
+          locVal nm `shouldBe` "R"
+          ty `shouldSatisfy` \case
+            RefTo INT -> True
+            _ -> False
+        other ->
+          expectationFailure $
+            "unexpected units: " <> show other
+
+    it "parses REF_TO variables in PROGRAM VAR section" $ do
+      let srcProg =
+            "PROGRAM P\n\
+            \VAR\n\
+            \  rInt  : REF_TO INT;\n\
+            \  rWord : REF_TO WORD;\n\
+            \END_VAR\n"
+      expectParsedUnits [srcProg] $ \case
+        [UProgram (Program _ vds _)] ->
+          case vds of
+            [v1, v2] -> do
+              -- 変数名
+              map (locVal . varName) [v1, v2]
+                `shouldBe` ["rInt", "rWord"]
+
+              -- 型は REF_TO INT / REF_TO WORD
+              varType v1 `shouldSatisfy` \case
+                RefTo INT -> True
+                _ -> False
+
+              varType v2 `shouldSatisfy` \case
+                RefTo WORD -> True
+                _ -> False
+            _ ->
+              expectationFailure $
+                "expected exactly 2 vars, got " <> show (length vds)
+        other ->
+          expectationFailure $
+            "unexpected units: " <> show other
+
+  describe "REF_TO dereference operator (parsing)" $ do
+    it "parses r^ as EDeref (EVar r) in assignment" $ do
+      let srcProg =
+            "PROGRAM P\n\
+            \VAR\n\
+            \  x : INT;\n\
+            \  r : REF_TO INT;\n\
+            \  y : INT;\n\
+            \END_VAR\n\
+            \y := r^;\n"
+      expectParsedUnits [srcProg] $ \case
+        [UProgram (Program _ _ stmts)] ->
+          case stmts of
+            [Assign lv e] -> do
+              -- 左辺 y
+              lv `shouldSatisfy` \case
+                LVar ident -> locVal ident == "y"
+                _ -> False
+
+              -- 右辺 r^
+              e `shouldSatisfy` \case
+                EDeref (EVar ident) -> locVal ident == "r"
+                _ -> False
+            _ ->
+              expectationFailure $
+                "expected exactly 1 statement, got " <> show (length stmts)
         other ->
           expectationFailure $
             "unexpected units: " <> show other

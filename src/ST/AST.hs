@@ -153,6 +153,7 @@ data STType
   | DT
   | LDT
   | FBMeta POUName
+  | RefTo STType -- REF_TO T
   deriving (Eq, Show)
 
 data Date = Date
@@ -217,6 +218,7 @@ data Expr
   | ELDT DateTime
   | ECall Identifier [CallArg]
   | EBit Expr PartialAccess
+  | EDeref Expr -- e^
   deriving (Eq, Show)
 
 data ConstVal
