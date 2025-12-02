@@ -62,6 +62,7 @@ module ST.Semantic
     InternalError (..),
     AssignToFBField (..),
     NotAnAnyBit (..),
+    NotARef (..),
   )
 where
 
@@ -262,6 +263,8 @@ data AssignToFBField = AssignToFBField FilePath VariableName MemberName deriving
 
 data NotAnAnyBit = NotAnAnyBit Span ActualSTType deriving (Eq, Show)
 
+data NotARef = NotARef Span ActualSTType deriving (Eq, Show)
+
 type AllErrs =
   [ AssignToConst,
     AssignToLoopVar,
@@ -305,7 +308,8 @@ type AllErrs =
     MissingFBOutputs,
     ArgDirectionMismatch,
     AssignToFBField,
-    NotAnAnyBit
+    NotAnAnyBit,
+    NotARef
   ]
 
 elaborateUnits ::
@@ -1041,7 +1045,8 @@ inferType ::
     InternalError :| e,
     UnknownFBMember :| e,
     NotAnAnyBit :| e,
-    OutOfRange :| e
+    OutOfRange :| e,
+    NotARef :| e
   ) =>
   Env ->
   Expr ->
@@ -1255,6 +1260,14 @@ inferType env = \case
       Nothing -> VEither.fromLeft $ NoReturnValue (sourceNameOf fn) fname
       Just rSig -> instantiateSigTyRet subst fname rSig
   EBit e pa -> inferPartialAccess env e pa
+  EDeref e -> do
+    t <- inferType env e
+    case t of
+      RefTo t' ->
+        pure t'
+      other ->
+        VEither.fromLeft $
+          NotARef (spanOfExpr e) other
   where
     eqLike ta tb =
       if nominalEq (envTypes env) ta tb
@@ -1522,8 +1535,9 @@ lvalueType ::
     FBUsedAsExpr :| e,
     InternalError :| e,
     UnknownFBMember :| e,
+    OutOfRange :| e,
     NotAnAnyBit :| e,
-    OutOfRange :| e
+    NotARef :| e
   ) =>
   Env ->
   STType ->
@@ -1605,7 +1619,8 @@ elabVar ::
     FBUsedAsExpr :| e,
     InternalError :| e,
     UnknownFBMember :| e,
-    NotAnAnyBit :| e
+    NotAnAnyBit :| e,
+    NotARef :| e
   ) =>
   Env -> Variable -> VEither e Variable
 elabVar env v =
@@ -1655,7 +1670,8 @@ checkExprAssignable ::
     FBUsedAsExpr :| e,
     InternalError :| e,
     UnknownFBMember :| e,
-    NotAnAnyBit :| e
+    NotAnAnyBit :| e,
+    NotARef :| e
   ) =>
   Env ->
   -- | tgt: 左辺の期待型（宣言型）
@@ -1721,7 +1737,8 @@ checkArrayAggInit ::
     FBUsedAsExpr :| e,
     InternalError :| e,
     UnknownFBMember :| e,
-    NotAnAnyBit :| e
+    NotAnAnyBit :| e,
+    NotARef :| e
   ) =>
   Env ->
   Identifier -> -- 変数名（診断用）
@@ -1785,7 +1802,8 @@ checkStructAggInit ::
     FBUsedAsExpr :| e,
     InternalError :| e,
     UnknownFBMember :| e,
-    NotAnAnyBit :| e
+    NotAnAnyBit :| e,
+    NotARef :| e
   ) =>
   Env ->
   Identifier ->
@@ -1882,7 +1900,8 @@ checkStmt ::
     UnknownFBMember :| e,
     ArgDirectionMismatch :| e,
     AssignToFBField :| e,
-    NotAnAnyBit :| e
+    NotAnAnyBit :| e,
+    NotARef :| e
   ) =>
   Env ->
   Statement ->
@@ -2287,6 +2306,7 @@ resolveType tenv = go Set.empty
       -- ★ 構造体の中も再帰的に解決
       Struct fs -> Struct <$> traverse (\(fld, t) -> (fld,) <$> go seen t) fs
       Array rs el -> Array rs <$> go seen el
+      RefTo t -> RefTo <$> resolveType tenv t
       -- ★ 既知の基底型はそのまま
       t -> VRight t
 

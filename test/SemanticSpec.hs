@@ -3181,3 +3181,85 @@ main = hspec $ do
       expectUnitFailWithDetail @NotAnAnyBit src $ \case
         NotAnAnyBit _ actualTy ->
           actualTy == INT
+
+  describe "REF_TO type and dereference (semantics)" $ do
+    it "accepts a REF_TO variable declared in PROGRAM without using it" $ do
+      -- 単に REF_TO INT の変数があるだけで elaboration が落ちないことの確認
+      let srcProg =
+            "PROGRAM P\n\
+            \VAR\n\
+            \  r : REF_TO INT;\n\
+            \END_VAR\n"
+      expectUnitsPassWithMode Strict M.empty [srcProg]
+      expectUnitsPassWithMode CodesysLike M.empty [srcProg]
+
+    it "allows assigning r^ to an INT when r : REF_TO INT" $ do
+      let srcProg =
+            "PROGRAM P\n\
+            \VAR\n\
+            \  x : INT;\n\
+            \  r : REF_TO INT;\n\
+            \END_VAR\n\
+            \x := r^;\n"
+      expectUnitsPassWithMode Strict M.empty [srcProg]
+      expectUnitsPassWithMode CodesysLike M.empty [srcProg]
+
+    it "allows dereferencing a REF_TO alias type defined in TYPE section" $ do
+      let srcType =
+            "TYPE RInt : REF_TO INT; END_TYPE\n"
+          srcProg =
+            "PROGRAM P\n\
+            \VAR\n\
+            \  x : INT;\n\
+            \  r : RInt;\n\
+            \END_VAR\n\
+            \x := r^;\n"
+      expectUnitsPassWithMode Strict M.empty [srcType, srcProg]
+      expectUnitsPassWithMode CodesysLike M.empty [srcType, srcProg]
+
+    it "allows dereferencing REF_TO of array and assigning to matching array type" $ do
+      let srcProg =
+            "PROGRAM P\n\
+            \VAR\n\
+            \  a : ARRAY [0..3] OF BYTE;\n\
+            \  r : REF_TO ARRAY [0..3] OF BYTE;\n\
+            \END_VAR\n\
+            \a := r^;\n"
+      expectUnitsPassWithMode Strict M.empty [srcProg]
+      expectUnitsPassWithMode CodesysLike M.empty [srcProg]
+
+    it "rejects ^ on a non-REF_TO expression (e.g. INT^)" $ do
+      let srcProg =
+            "PROGRAM P\n\
+            \VAR\n\
+            \  x : INT;\n\
+            \  y : INT;\n\
+            \END_VAR\n\
+            \y := x^;\n"
+      -- NotARef は新しく追加するエラー型（例: data NotARef = NotARef Span ActualSTType）
+      expectUnitsFailWithDetailWithMode @NotARef Strict M.empty [srcProg] $ \case
+        NotARef _ ty -> ty == INT
+      expectUnitsFailWithDetailWithMode @NotARef CodesysLike M.empty [srcProg] $ \case
+        NotARef _ ty -> ty == INT
+
+    it "rejects ^ on a non-REF_TO structured expression (e.g. structVar^)" $ do
+      let srcType =
+            "TYPE S : STRUCT v : INT; END_STRUCT END_TYPE\n"
+          srcProg =
+            "PROGRAM P\n\
+            \VAR\n\
+            \  s : S;\n\
+            \  x : INT;\n\
+            \END_VAR\n\
+            \x := s^;\n"
+      expectUnitsFailWithDetailWithMode @NotARef Strict M.empty [srcType, srcProg] $ \case
+        NotARef _ ty ->
+          -- ここはとりあえず「STRUCT S ... に相当する型なら OK」くらいのゆるさで
+          case ty of
+            Struct _ -> True
+            _ -> False
+      expectUnitsFailWithDetailWithMode @NotARef CodesysLike M.empty [srcType, srcProg] $ \case
+        NotARef _ ty ->
+          case ty of
+            Struct _ -> True
+            _ -> False
