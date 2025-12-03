@@ -727,6 +727,7 @@ pPrimaryE =
     [ pArrayAgg,
       pStructAgg,
       parens pExpr,
+      try pRefExpr,
       try pCharLit,
       try pWCharLit,
       try pLDTLit,
@@ -1258,3 +1259,11 @@ pCallArgs =
 
     posArg =
       CallArgPos <$> pExpr
+
+pRefExpr :: Parser Expr
+pRefExpr = lexeme $ do
+  _ <- symbol "REF"
+  _ <- symbol "("
+  e <- pExpr
+  _ <- symbol ")"
+  pure (ERef e)

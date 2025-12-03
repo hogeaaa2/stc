@@ -107,6 +107,7 @@ stripExpr =
        in EStructAgg (sortOn (locVal . fst) norm)
     EBit e pa -> EBit (stripExpr e) pa
     EDeref e -> EDeref (stripExpr e)
+    ERef e -> ERef (stripExpr e)
 
 stripLValue :: LValue -> LValue
 stripLValue =
@@ -1554,6 +1555,66 @@ main = hspec $ do
               e `shouldSatisfy` \case
                 EDeref (EVar ident) -> locVal ident == "r"
                 _ -> False
+            _ ->
+              expectationFailure $
+                "expected exactly 1 statement, got " <> show (length stmts)
+        other ->
+          expectationFailure $
+            "unexpected units: " <> show other
+
+  describe "REF(expr) (parsing)" $ do
+    it "parses REF(x) as ERef (EVar x) in a standalone expression" $ do
+      -- 単純な式として REF(x) をパース
+      shouldParseExprToNoLoc
+        runE
+        "REF(x)"
+        (ERef (EVar (toIdent "x")))
+
+    it "parses assignment r := REF(x) inside a PROGRAM" $ do
+      let srcProg =
+            "PROGRAM P\n\
+            \VAR\n\
+            \  x : INT;\n\
+            \  r : REF_TO INT;\n\
+            \END_VAR\n\
+            \r := REF(x);\n"
+      expectParsedUnits [srcProg] $ \case
+        [UProgram (Program _ _ stmts)] ->
+          case stmts of
+            [Assign lv e] -> do
+              -- 左辺 r
+              lv `shouldSatisfy` \case
+                LVar ident -> locVal ident == "r"
+                _ -> False
+
+              -- 右辺 REF(x)
+              e `shouldSatisfy` \case
+                ERef (EVar ident) -> locVal ident == "x"
+                _ -> False
+            _ ->
+              expectationFailure $
+                "expected exactly 1 statement, got " <> show (length stmts)
+        other ->
+          expectationFailure $
+            "unexpected units: " <> show other
+
+    it "parses REF(a[1]) with nested index expression" $ do
+      let srcProg =
+            "PROGRAM P\n\
+            \VAR\n\
+            \  a : ARRAY [0..3] OF INT;\n\
+            \  r : REF_TO INT;\n\
+            \END_VAR\n\
+            \r := REF(a[1]);\n"
+      expectParsedUnits [srcProg] $ \case
+        [UProgram (Program _ _ stmts)] ->
+          case stmts of
+            [Assign _ e] ->
+              e `shouldSatisfy` \case
+                ERef (EIndex (EVar ident) [EINT 1]) ->
+                  locVal ident == "a"
+                _ ->
+                  False
             _ ->
               expectationFailure $
                 "expected exactly 1 statement, got " <> show (length stmts)

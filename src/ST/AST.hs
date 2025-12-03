@@ -219,6 +219,7 @@ data Expr
   | ECall Identifier [CallArg]
   | EBit Expr PartialAccess
   | EDeref Expr -- e^
+  | ERef Expr -- REF()
   deriving (Eq, Show)
 
 data ConstVal
