@@ -63,6 +63,7 @@ module ST.Semantic
     AssignToFBField (..),
     NotAnAnyBit (..),
     NotARef (..),
+    NotARefBase (..),
   )
 where
 
@@ -265,6 +266,8 @@ data NotAnAnyBit = NotAnAnyBit Span ActualSTType deriving (Eq, Show)
 
 data NotARef = NotARef Span ActualSTType deriving (Eq, Show)
 
+data NotARefBase = NotARefBase Span ActualSTType deriving (Eq, Show)
+
 type AllErrs =
   [ AssignToConst,
     AssignToLoopVar,
@@ -309,7 +312,8 @@ type AllErrs =
     ArgDirectionMismatch,
     AssignToFBField,
     NotAnAnyBit,
-    NotARef
+    NotARef,
+    NotARefBase
   ]
 
 elaborateUnits ::
@@ -607,7 +611,8 @@ elaborateFunction mode tenv gvenv fenv fn = do
 typeEnvFromUnits ::
   ( TypeCycle :| e,
     UnknownType :| e,
-    TypeFBNameClash :| e
+    TypeFBNameClash :| e,
+    NotARefBase :| e
   ) =>
   Units -> VEither e TypeEnv
 typeEnvFromUnits us = do
@@ -645,7 +650,8 @@ typeEnvFromUnits us = do
 funcEnvFromUnit ::
   ( DuplicateFunction :| e,
     TypeCycle :| e,
-    UnknownType :| e
+    UnknownType :| e,
+    NotARefBase :| e
   ) =>
   TypeEnv -> FuncEnv -> Unit -> VEither e FuncEnv
 funcEnvFromUnit tenv fenv = \case
@@ -656,7 +662,8 @@ funcEnvFromUnit tenv fenv = \case
 funcEnvFromUnits ::
   ( DuplicateFunction :| e,
     TypeCycle :| e,
-    UnknownType :| e
+    UnknownType :| e,
+    NotARefBase :| e
   ) =>
   TypeEnv -> FuncEnv -> Units -> VEither e FuncEnv
 funcEnvFromUnits tenv = foldM (funcEnvFromUnit tenv)
@@ -664,7 +671,8 @@ funcEnvFromUnits tenv = foldM (funcEnvFromUnit tenv)
 globalVarEnvFromUnits ::
   ( TypeCycle :| e,
     UnknownType :| e,
-    DuplicateVar :| e
+    DuplicateVar :| e,
+    NotARefBase :| e
   ) =>
   TypeEnv -> Units -> VEither e GlobalVarEnv
 globalVarEnvFromUnits tenv us = do
@@ -695,7 +703,8 @@ addFunction ::
   forall e.
   ( TypeCycle :| e,
     UnknownType :| e,
-    DuplicateFunction :| e
+    DuplicateFunction :| e,
+    NotARefBase :| e
   ) =>
   TypeEnv -> FuncEnv -> Function -> VEither e FuncEnv
 addFunction tenv env f = do
@@ -733,7 +742,8 @@ addFunctionBlock ::
   forall e.
   ( TypeCycle :| e,
     UnknownType :| e,
-    DuplicateFunction :| e
+    DuplicateFunction :| e,
+    NotARefBase :| e
   ) =>
   TypeEnv -> FuncEnv -> FunctionBlock -> VEither e FuncEnv
 addFunctionBlock tenv env (FunctionBlock {fbName, fbVars}) = do
@@ -762,7 +772,8 @@ addFunctionBlock tenv env (FunctionBlock {fbName, fbVars}) = do
 collectPOUParams ::
   forall e.
   ( TypeCycle :| e,
-    UnknownType :| e
+    UnknownType :| e,
+    NotARefBase :| e
   ) =>
   TypeEnv -> [Variable] -> VEither e [ParamSig]
 collectPOUParams tenv vs =
@@ -992,7 +1003,7 @@ defaultInitWithTypes tenv = go
         pure (EArrayAgg (replicate n el0))
       -- 別名は解決して再帰
       Named _ ->
-        VEither.veither @'[TypeCycle, UnknownType]
+        VEither.veither @'[TypeCycle, UnknownType, NotARefBase]
           (const Nothing)
           go
           (resolveType tenv ty)
@@ -1046,7 +1057,8 @@ inferType ::
     UnknownFBMember :| e,
     NotAnAnyBit :| e,
     OutOfRange :| e,
-    NotARef :| e
+    NotARef :| e,
+    NotARefBase :| e
   ) =>
   Env ->
   Expr ->
@@ -1268,6 +1280,9 @@ inferType env = \case
       other ->
         VEither.fromLeft $
           NotARef (spanOfExpr e) other
+  ERef e -> do
+    t <- inferType env e
+    pure (RefTo t)
   where
     eqLike ta tb =
       if nominalEq (envTypes env) ta tb
@@ -1537,7 +1552,8 @@ lvalueType ::
     UnknownFBMember :| e,
     OutOfRange :| e,
     NotAnAnyBit :| e,
-    NotARef :| e
+    NotARef :| e,
+    NotARefBase :| e
   ) =>
   Env ->
   STType ->
@@ -1620,7 +1636,8 @@ elabVar ::
     InternalError :| e,
     UnknownFBMember :| e,
     NotAnAnyBit :| e,
-    NotARef :| e
+    NotARef :| e,
+    NotARefBase :| e
   ) =>
   Env -> Variable -> VEither e Variable
 elabVar env v =
@@ -1671,7 +1688,8 @@ checkExprAssignable ::
     InternalError :| e,
     UnknownFBMember :| e,
     NotAnAnyBit :| e,
-    NotARef :| e
+    NotARef :| e,
+    NotARefBase :| e
   ) =>
   Env ->
   -- | tgt: 左辺の期待型（宣言型）
@@ -1738,7 +1756,8 @@ checkArrayAggInit ::
     InternalError :| e,
     UnknownFBMember :| e,
     NotAnAnyBit :| e,
-    NotARef :| e
+    NotARef :| e,
+    NotARefBase :| e
   ) =>
   Env ->
   Identifier -> -- 変数名（診断用）
@@ -1803,7 +1822,8 @@ checkStructAggInit ::
     InternalError :| e,
     UnknownFBMember :| e,
     NotAnAnyBit :| e,
-    NotARef :| e
+    NotARef :| e,
+    NotARefBase :| e
   ) =>
   Env ->
   Identifier ->
@@ -1901,7 +1921,8 @@ checkStmt ::
     ArgDirectionMismatch :| e,
     AssignToFBField :| e,
     NotAnAnyBit :| e,
-    NotARef :| e
+    NotARef :| e,
+    NotARefBase :| e
   ) =>
   Env ->
   Statement ->
@@ -2245,7 +2266,8 @@ checkConstDesignator ::
   forall e.
   ( NonConstantExpr :| e,
     TypeCycle :| e,
-    UnknownType :| e
+    UnknownType :| e,
+    NotARefBase :| e
   ) =>
   Env -> Expr -> VEither e ()
 checkConstDesignator env = go
@@ -2288,13 +2310,13 @@ checkConstDesignator env = go
 
 resolveType ::
   ( TypeCycle :| e,
-    UnknownType :| e
+    UnknownType :| e,
+    NotARefBase :| e
   ) =>
   TypeEnv -> STType -> VEither e STType
 resolveType tenv = go Set.empty
   where
     go seen = \case
-      -- ★ 別名の解決：Identifier から Text と Span を取り出す
       Named n ->
         let nameTxt = locVal n
             whereSp = locSpan n
@@ -2303,17 +2325,24 @@ resolveType tenv = go Set.empty
               else case M.lookup nameTxt tenv of
                 Nothing -> VEither.fromLeft $ UnknownType nameTxt whereSp
                 Just t -> go (Set.insert nameTxt seen) t
-      -- ★ 構造体の中も再帰的に解決
       Struct fs -> Struct <$> traverse (\(fld, t) -> (fld,) <$> go seen t) fs
       Array rs el -> Array rs <$> go seen el
-      RefTo t -> RefTo <$> resolveType tenv t
-      -- ★ 既知の基底型はそのまま
+      RefTo t -> do
+        t' <- resolveType tenv t
+        case t' of
+          -- REF_TO REF_TO INT みたいなパターン
+          RefTo _ ->
+            VEither.fromLeft (NotARefBase noSpan t')
+          -- それ以外は素直に OK
+          _ ->
+            pure (RefTo t')
       t -> VRight t
 
 -- 変数宣言の型を TypeEnv で解決して書き戻す
 resolveVarTypes ::
   ( TypeCycle :| e,
-    UnknownType :| e
+    UnknownType :| e,
+    NotARefBase :| e
   ) =>
   TypeEnv -> [Variable] -> VEither e [Variable]
 resolveVarTypes tenv = traverse step
@@ -2339,7 +2368,7 @@ resolveVarTypes tenv = traverse step
 -- actTy が expTy と互換か？
 nominalEq :: TypeEnv -> STType -> STType -> Bool
 nominalEq tenv a b =
-  let res :: STType -> VEither '[TypeCycle, UnknownType] STType
+  let res :: STType -> VEither '[TypeCycle, UnknownType, NotARefBase] STType
       res = resolveType tenv
    in case (a, b) of
         (Named n1, Named n2) ->
@@ -2384,7 +2413,7 @@ evalConstExpr env = go
       EDT dt -> Just (CVDT dt)
       -- 列挙 Type.Ctor
       EField (EVar ty) ctor ->
-        case resolveType (envTypes env) (Named ty) :: VEither [TypeCycle, UnknownType] STType of
+        case resolveType (envTypes env) (Named ty) :: VEither [TypeCycle, UnknownType, NotARefBase] STType of
           VRight (Enum ctors)
             | any ((== locVal ctor) . locVal . fst) ctors ->
                 Just (CVEnum (locVal ty) (locVal ctor))
@@ -2401,7 +2430,8 @@ evalConstExpr env = go
 gstMember ::
   forall e.
   ( TypeCycle :| e,
-    UnknownType :| e
+    UnknownType :| e,
+    NotARefBase :| e
   ) =>
   TypeEnv -> STType -> GSTType -> VEither e Bool
 gstMember tenv ty0 gst = do

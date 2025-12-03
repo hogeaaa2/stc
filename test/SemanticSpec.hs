@@ -3263,3 +3263,61 @@ main = hspec $ do
           case ty of
             Struct _ -> True
             _ -> False
+
+  describe "REF(expr) semantics (minimal)" $ do
+    it "allows assigning REF(x) to REF_TO INT variable in both modes" $ do
+      let src =
+            "PROGRAM P\n\
+            \VAR\n\
+            \  x : INT;\n\
+            \  r : REF_TO INT;\n\
+            \END_VAR\n\
+            \r := REF(x);\n"
+      forM_ [Strict, CodesysLike] $ \mode ->
+        expectUnitsPassWithMode mode M.empty [src]
+
+    it "rejects assigning REF(x) to non-ref INT variable (TypeMismatch)" $ do
+      let src =
+            "PROGRAM P\n\
+            \VAR\n\
+            \  x : INT;\n\
+            \  y : INT;\n\
+            \END_VAR\n\
+            \y := REF(x);\n"
+      forM_ [Strict, CodesysLike] $ \mode ->
+        expectUnitsFailWithDetailWithMode @TypeMismatch mode M.empty [src] $
+          \case
+            TypeMismatch v _ expected actual ->
+              -- y に代入しようとしていて、
+              -- 期待が INT、実際が REF_TO INT になっていること
+              v == "y"
+                && expected == INT
+                && actual == RefTo INT
+
+    it "rejects REF_TO REF_TO INT as a reference base type" $ do
+      let src =
+            "PROGRAM P\n\
+            \VAR\n\
+            \  x  : INT;\n\
+            \  r1 : REF_TO INT;\n\
+            \  r2 : REF_TO REF_TO INT;\n\
+            \END_VAR\n\
+            \r1 := REF(x);\n\
+            \r2 := REF(r1);\n"
+      forM_ [Strict, CodesysLike] $ \mode ->
+        expectUnitsFailWithDetailWithMode @NotARefBase mode M.empty [src] $
+          \case
+            -- REF_TO の「ベース型」が REF_TO INT だからそれを ActualSTType に渡す想定
+            NotARefBase _ ty -> ty == RefTo INT
+            _ -> False
+
+    it "allows y := REF(x)^ as INT assignment in both modes" $ do
+      let src =
+            "PROGRAM P\n\
+            \VAR\n\
+            \  x : INT;\n\
+            \  y : INT;\n\
+            \END_VAR\n\
+            \y := REF(x)^;\n"
+      forM_ [Strict, CodesysLike] $ \mode ->
+        expectUnitsPassWithMode mode M.empty [src]
