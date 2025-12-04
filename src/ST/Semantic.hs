@@ -64,6 +64,8 @@ module ST.Semantic
     NotAnAnyBit (..),
     NotARef (..),
     NotARefBase (..),
+    InvalidRefTarget (..),
+    RefToConst (..),
   )
 where
 
@@ -268,6 +270,10 @@ data NotARef = NotARef Span ActualSTType deriving (Eq, Show)
 
 data NotARefBase = NotARefBase Span ActualSTType deriving (Eq, Show)
 
+newtype InvalidRefTarget = InvalidRefTarget Span deriving (Eq, Show)
+
+data RefToConst = RefToConst VariableName Span deriving (Eq, Show)
+
 type AllErrs =
   [ AssignToConst,
     AssignToLoopVar,
@@ -313,7 +319,9 @@ type AllErrs =
     AssignToFBField,
     NotAnAnyBit,
     NotARef,
-    NotARefBase
+    NotARefBase,
+    InvalidRefTarget,
+    RefToConst
   ]
 
 elaborateUnits ::
@@ -1058,7 +1066,9 @@ inferType ::
     NotAnAnyBit :| e,
     OutOfRange :| e,
     NotARef :| e,
-    NotARefBase :| e
+    NotARefBase :| e,
+    InvalidRefTarget :| e,
+    RefToConst :| e
   ) =>
   Env ->
   Expr ->
@@ -1281,8 +1291,26 @@ inferType env = \case
         VEither.fromLeft $
           NotARef (spanOfExpr e) other
   ERef e -> do
-    t <- inferType env e
-    pure (RefTo t)
+    -- ① まず「参照可能な場所」かチェック
+    case exprToLValue e of
+      Nothing ->
+        VEither.fromLeft (InvalidRefTarget (spanOfExpr e))
+      Just lv -> do
+        -- ② CONST 変数ならエラー
+        case baseVarName lv of
+          Just n ->
+            case M.lookup n (envVars env) of
+              Just vi
+                | viConst vi ->
+                    VEither.fromLeft (RefToConst n (spanOfExpr e))
+              _ ->
+                pure ()
+          Nothing ->
+            pure ()
+
+        -- ③ 型は従来どおり inferType で決めて REF_TO に包む
+        t <- inferType env e
+        pure (RefTo t)
   where
     eqLike ta tb =
       if nominalEq (envTypes env) ta tb
@@ -1553,7 +1581,9 @@ lvalueType ::
     OutOfRange :| e,
     NotAnAnyBit :| e,
     NotARef :| e,
-    NotARefBase :| e
+    NotARefBase :| e,
+    InvalidRefTarget :| e,
+    RefToConst :| e
   ) =>
   Env ->
   STType ->
@@ -1637,7 +1667,9 @@ elabVar ::
     UnknownFBMember :| e,
     NotAnAnyBit :| e,
     NotARef :| e,
-    NotARefBase :| e
+    NotARefBase :| e,
+    InvalidRefTarget :| e,
+    RefToConst :| e
   ) =>
   Env -> Variable -> VEither e Variable
 elabVar env v =
@@ -1689,7 +1721,9 @@ checkExprAssignable ::
     UnknownFBMember :| e,
     NotAnAnyBit :| e,
     NotARef :| e,
-    NotARefBase :| e
+    NotARefBase :| e,
+    InvalidRefTarget :| e,
+    RefToConst :| e
   ) =>
   Env ->
   -- | tgt: 左辺の期待型（宣言型）
@@ -1757,7 +1791,9 @@ checkArrayAggInit ::
     UnknownFBMember :| e,
     NotAnAnyBit :| e,
     NotARef :| e,
-    NotARefBase :| e
+    NotARefBase :| e,
+    InvalidRefTarget :| e,
+    RefToConst :| e
   ) =>
   Env ->
   Identifier -> -- 変数名（診断用）
@@ -1823,7 +1859,9 @@ checkStructAggInit ::
     UnknownFBMember :| e,
     NotAnAnyBit :| e,
     NotARef :| e,
-    NotARefBase :| e
+    NotARefBase :| e,
+    InvalidRefTarget :| e,
+    RefToConst :| e
   ) =>
   Env ->
   Identifier ->
@@ -1922,7 +1960,9 @@ checkStmt ::
     AssignToFBField :| e,
     NotAnAnyBit :| e,
     NotARef :| e,
-    NotARefBase :| e
+    NotARefBase :| e,
+    InvalidRefTarget :| e,
+    RefToConst :| e
   ) =>
   Env ->
   Statement ->

@@ -3309,7 +3309,6 @@ main = hspec $ do
           \case
             -- REF_TO の「ベース型」が REF_TO INT だからそれを ActualSTType に渡す想定
             NotARefBase _ ty -> ty == RefTo INT
-            _ -> False
 
     it "allows y := REF(x)^ as INT assignment in both modes" $ do
       let src =
@@ -3321,3 +3320,66 @@ main = hspec $ do
             \y := REF(x)^;\n"
       forM_ [Strict, CodesysLike] $ \mode ->
         expectUnitsPassWithMode mode M.empty [src]
+
+  describe "REF target constraints (semantics)" $ do
+    it "allows REF on a plain variable" $ do
+      let src =
+            "PROGRAM P\n\
+            \VAR\n\
+            \  x : INT;\n\
+            \  r : REF_TO INT;\n\
+            \END_VAR\n\
+            \r := REF(x);\n"
+      forM_ [Strict, CodesysLike] $ \mode ->
+        expectUnitsPassWithMode mode M.empty [src]
+
+    it "allows REF on an array element" $ do
+      let src =
+            "PROGRAM P\n\
+            \VAR\n\
+            \  a : ARRAY[0..3] OF INT;\n\
+            \  r : REF_TO INT;\n\
+            \END_VAR\n\
+            \r := REF(a[0]);\n"
+      forM_ [Strict, CodesysLike] $ \mode ->
+        expectUnitsPassWithMode mode M.empty [src]
+
+    it "rejects REF on a literal (InvalidRefTarget)" $ do
+      let src =
+            "PROGRAM P\n\
+            \VAR\n\
+            \  r : REF_TO INT;\n\
+            \END_VAR\n\
+            \r := REF(1);\n"
+      forM_ [Strict, CodesysLike] $ \mode ->
+        expectUnitsFailWithDetailWithMode @InvalidRefTarget mode M.empty [src] $
+          \case
+            InvalidRefTarget _ -> True
+
+    it "rejects REF on a non-lvalue expression (x + 1)" $ do
+      let src =
+            "PROGRAM P\n\
+            \VAR\n\
+            \  x : INT;\n\
+            \  r : REF_TO INT;\n\
+            \END_VAR\n\
+            \r := REF(x + 1);\n"
+      forM_ [Strict, CodesysLike] $ \mode ->
+        expectUnitsFailWithDetailWithMode @InvalidRefTarget mode M.empty [src] $
+          \case
+            InvalidRefTarget _ -> True
+
+    it "rejects REF on a CONSTANT variable (RefToConst)" $ do
+      let src =
+            "PROGRAM P\n\
+            \VAR CONSTANT\n\
+            \  c : INT := 1;\n\
+            \END_VAR\n\
+            \VAR\n\
+            \  r : REF_TO INT;\n\
+            \END_VAR\n\
+            \r := REF(c);\n"
+      forM_ [Strict, CodesysLike] $ \mode ->
+        expectUnitsFailWithDetailWithMode @RefToConst mode M.empty [src] $
+          \case
+            RefToConst v _ -> v == "c"
