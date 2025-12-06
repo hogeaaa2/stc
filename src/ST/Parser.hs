@@ -756,41 +756,8 @@ pPostfixE :: Expr -> Parser Expr
 pPostfixE = go
   where
     go e = do
-      m <- optional (choice [partialAccess e, field e, index e, deref e])
+      m <- optional (choice [bit e, field e, index e, deref e])
       maybe (pure e) go m
-
-    -- 部分アクセス: .7 / .%X7 / .%B3 / .%W1 / .%D0
-    partialAccess :: Expr -> Parser Expr
-    partialAccess e' =
-      choice
-        [ paPercent e',
-          paIndexPlain e'
-        ]
-
-    -- .%Xn / .%Bn / .%Wn / .%Dn
-    paPercent :: Expr -> Parser Expr
-    paPercent e' = lexeme . try $ do
-      _ <- char '.'
-      _ <- char '%'
-      c <- oneOf ['X', 'x', 'B', 'b', 'W', 'w', 'D', 'd']
-      n <- L.decimal
-      let pa =
-            case toUpper c of
-              'X' -> PAIndex n
-              'B' -> PAByte n
-              'W' -> PAWord n
-              'D' -> PADword n
-              _ -> PAIndex n -- 来ないはず
-      pure (EBit e' pa)
-
-    -- .<digits> → PAIndex
-    paIndexPlain :: Expr -> Parser Expr
-    paIndexPlain e' = lexeme . try $ do
-      _ <- char '.'
-      d0 <- digitChar
-      ds <- many digitChar
-      let n = read (d0 : ds)
-      pure (EBit e' (PAIndex n))
 
     field e' = do
       dot1
@@ -805,21 +772,53 @@ pPostfixE = go
       _ <- lexeme (char '^')
       pure (EDeref e')
 
+    bit e' = EBit e' <$> partialAccessCore
+
 -- フィールド/添字のポストフィックス（左辺用）
 pPostfixL :: LValue -> Parser LValue
 pPostfixL = go
   where
     go l = do
-      m <- optional (choice [field l, index l])
+      m <- optional (choice [bit l, field l, index l])
       maybe (pure l) go m
 
     field l' = do
       dot1
       LField l' <$> identifier
 
-    index l'' = do
+    index l' = do
       is <- brackets (pExpr `sepBy1` symbol ",")
-      pure (LIndex l'' is)
+      pure (LIndex l' is)
+
+    bit l' = do
+      LBit l' <$> partialAccessCore
+
+-- 部分アクセス: .7 / .%X7 / .%B3 / .%W1 / .%D0
+partialAccessCore :: Parser PartialAccess
+partialAccessCore =
+  choice
+    [ paPercent,
+      paIndexPlain
+    ]
+  where
+    -- .%Xn / .%Bn / .%Wn / .%Dn
+    paPercent = lexeme . try $ do
+      _ <- char '.'
+      _ <- char '%'
+      c <- oneOf ['X', 'x', 'B', 'b', 'W', 'w', 'D', 'd']
+      case toUpper c of
+        'X' -> PAIndex <$> L.decimal
+        'B' -> PAByte <$> L.decimal
+        'W' -> PAWord <$> L.decimal
+        'D' -> PADword <$> L.decimal
+        _ -> PAIndex <$> L.decimal -- 来ないはず
+
+    -- .<digits> → PAIndex
+    paIndexPlain = lexeme . try $ do
+      _ <- char '.'
+      d0 <- digitChar
+      ds <- many digitChar
+      pure $ PAIndex . read $ d0 : ds
 
 -- 構造体集成: (name := expr, ...)
 pStructAgg :: Parser Expr

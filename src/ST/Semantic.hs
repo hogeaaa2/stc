@@ -447,6 +447,8 @@ elaborateFunctionBlock mode tenv gvenv fenv (FunctionBlock fname vds body) = do
         lvalueWritesTo fname' lv
       LField lv _ ->
         lvalueWritesTo fname' lv
+      LBit lv _ ->
+        lvalueWritesTo fname' lv
 
     caseArmAssignsTo :: Text -> CaseArm -> Bool
     caseArmAssignsTo fname' (CaseArm _ stmts) =
@@ -926,6 +928,7 @@ lvalueRootName = \case
   LVar i -> locVal i
   LField lv _ -> lvalueRootName lv
   LIndex lv _ -> lvalueRootName lv
+  LBit lv _ -> lvalueRootName lv
 
 -- 整数リテラル or その符号付き
 isIntLikeLiteral :: Expr -> Bool
@@ -1281,7 +1284,9 @@ inferType env = \case
     case fsRet of
       Nothing -> VEither.fromLeft $ NoReturnValue (sourceNameOf fn) fname
       Just rSig -> instantiateSigTyRet subst fname rSig
-  EBit e pa -> inferPartialAccess env e pa
+  EBit e pa -> do
+    tyBase <- inferType env e
+    anyBitResultType (baseNameOfExpr e) (spanOfExpr e) tyBase pa
   EDeref e -> do
     t <- inferType env e
     case t of
@@ -1436,43 +1441,72 @@ inferType env = \case
         _ | isBitString ta && ta == tb -> VRight ta
         _ -> VEither.fromLeft $ TypeMismatch' tb0
 
-    inferPartialAccess :: Env -> Expr -> PartialAccess -> VEither e STType
-    inferPartialAccess env' e pa = do
-      tBase <- inferType env' e
-      let sp = spanOfExpr e -- or spanOfExpr (EBit e pa), どっちでもOK
-          vname = baseNameOfExpr e -- "By" / "Do" / "Lw" など
-          badAnyBit = VEither.fromLeft $ NotAnAnyBit sp tBase
-          outOfRange n = VEither.fromLeft $ OutOfRange vname tBase (fromIntegral n) sp
+-- ANY_BIT 部分アクセスの結果型を求める共通関数
+anyBitResultType ::
+  (OutOfRange :| e, NotAnAnyBit :| e) =>
+  Text -> Span -> STType -> PartialAccess -> VEither e STType
+anyBitResultType vname sp baseTy pa = do
+  let badAnyBit = VEither.fromLeft $ NotAnAnyBit sp baseTy
+      outOfRange n = VEither.fromLeft $ OutOfRange vname baseTy (fromIntegral n) sp
+  case pa of
+    PAIndex n ->
+      case bitWidthOf baseTy of
+        Nothing -> badAnyBit
+        Just w ->
+          if 0 <= n && n < w
+            then pure BOOL
+            else outOfRange n
+    PAByte n ->
+      case byteCountOf baseTy of
+        Nothing -> badAnyBit
+        Just cnt ->
+          if 0 <= n && n < cnt
+            then pure BYTE
+            else outOfRange n
+    PAWord n ->
+      case wordCountOf baseTy of
+        Nothing -> badAnyBit
+        Just cnt ->
+          if 0 <= n && n < cnt
+            then pure WORD
+            else outOfRange n
+    PADword n ->
+      case dwordCountOf baseTy of
+        Nothing -> badAnyBit
+        Just cnt ->
+          if 0 <= n && n < cnt
+            then pure DWORD
+            else outOfRange n
+  where
+    bitWidthOf :: STType -> Maybe Int
+    bitWidthOf = \case
+      BOOL -> Nothing
+      BYTE -> Just 8
+      WORD -> Just 16
+      DWORD -> Just 32
+      LWORD -> Just 64
+      _ -> Nothing
 
-      case pa of
-        PAIndex n ->
-          case bitWidthOf tBase of
-            Nothing -> badAnyBit
-            Just w ->
-              if 0 <= n && n < w
-                then pure BOOL
-                else outOfRange n
-        PAByte n ->
-          case byteCountOf tBase of
-            Nothing -> badAnyBit
-            Just cnt ->
-              if 0 <= n && n < cnt
-                then pure BYTE
-                else outOfRange n
-        PAWord n ->
-          case wordCountOf tBase of
-            Nothing -> badAnyBit
-            Just cnt ->
-              if 0 <= n && n < cnt
-                then pure WORD
-                else outOfRange n
-        PADword n ->
-          case dwordCountOf tBase of
-            Nothing -> badAnyBit
-            Just cnt ->
-              if 0 <= n && n < cnt
-                then pure DWORD
-                else outOfRange n
+    byteCountOf :: STType -> Maybe Int
+    byteCountOf = \case
+      BYTE -> Just 1
+      WORD -> Just 2
+      DWORD -> Just 4
+      LWORD -> Just 8
+      _ -> Nothing
+
+    wordCountOf :: STType -> Maybe Int
+    wordCountOf = \case
+      WORD -> Just 1
+      DWORD -> Just 2
+      LWORD -> Just 4
+      _ -> Nothing
+
+    dwordCountOf :: STType -> Maybe Int
+    dwordCountOf = \case
+      DWORD -> Just 1
+      LWORD -> Just 2
+      _ -> Nothing
 
 assignArgs ::
   forall e.
@@ -1548,6 +1582,7 @@ baseIdent = \case
   LVar i -> i
   LField l _ -> baseIdent l
   LIndex l _ -> baseIdent l
+  LBit l _ -> baseIdent l
 
 -- 環境中の型から、LValue に沿って最終型を掘る
 lvalueType ::
@@ -1634,6 +1669,9 @@ lvalueType env ty = \case
         pure elTy
       _ -> VEither.fromLeft $ TypeMismatch' tRes
   LIndex _ _ -> VEither.fromLeft WhyDidYouComeHere
+  LBit lv pa -> do
+    baseTy <- lvalueType env ty lv
+    anyBitResultType (fromJust $ baseVarName lv) (spanOfLValue (LBit lv pa)) baseTy pa
 
 -- 1変数の意味解析：型チェック & 既定初期化付与
 elabVar ::
@@ -2285,6 +2323,7 @@ rootVarId = \case
   LVar i -> Just i
   LField lv _ -> rootVarId lv
   LIndex lv _ -> rootVarId lv
+  LBit lv _ -> rootVarId lv
 
 --   f.o.p なら Just "p"
 --   f.o[0] なら Just "o"
@@ -2294,6 +2333,7 @@ lastFieldIdent = \case
   LVar _ -> Nothing
   LIndex lv _ -> lastFieldIdent lv
   LField _lv fld -> Just fld
+  LBit lv _ -> lastFieldIdent lv
 
 -- =========================================================
 --  Constant *Designator* checker (CODESYS 風, CASE セレクタ用)
@@ -2564,6 +2604,7 @@ sourceNameOf' = \case
   LVar i -> sourceNameOf i
   LField l _ -> sourceNameOf' l
   LIndex l _ -> sourceNameOf' l
+  LBit l _ -> sourceNameOf' l
 
 -- LValue の“ベース変数名”を抽出
 baseVarName :: LValue -> Maybe Text
@@ -2571,12 +2612,14 @@ baseVarName = \case
   LVar ident -> Just (locVal ident)
   LIndex lv _ -> baseVarName lv
   LField lv _ -> baseVarName lv
+  LBit lv _ -> baseVarName lv
 
 fromLValue :: LValue -> Identifier
 fromLValue = \case
   LVar ident -> ident
   LIndex lv _ -> fromLValue lv
   LField lv _ -> fromLValue lv
+  LBit lv _ -> fromLValue lv
 
 -- 要求された変数名集合 req が、ブロック実行後に「確実に代入済み」になるか
 mustAssignAll :: Set Text -> [Statement] -> Bool
@@ -2657,6 +2700,7 @@ spanOfLValue = \case
     case reverse es of
       (eLast : _) -> spanFromTo (spanOfLValue lv) (spanOfExpr eLast)
       [] -> spanOfLValue lv -- 文法上 [] は来ないはずだけど保険
+  LBit lv _ -> spanOfLValue lv
 
 -- 「FBの配下を指している代入か？」判定。返り値は (FB変数名, 直近のフィールド名)
 fbSubfieldTarget ::
@@ -2715,36 +2759,6 @@ buildPOUVarEnv gvenv =
                     TypeMismatch name sp globalTy localTy
         -- それ以外は従来通り
         _ -> insertVar m v
-
-bitWidthOf :: STType -> Maybe Int
-bitWidthOf = \case
-  BOOL -> Just 1
-  BYTE -> Just 8
-  WORD -> Just 16
-  DWORD -> Just 32
-  LWORD -> Just 64
-  _ -> Nothing
-
-byteCountOf :: STType -> Maybe Int
-byteCountOf = \case
-  BYTE -> Just 1
-  WORD -> Just 2
-  DWORD -> Just 4
-  LWORD -> Just 8
-  _ -> Nothing
-
-wordCountOf :: STType -> Maybe Int
-wordCountOf = \case
-  WORD -> Just 1
-  DWORD -> Just 2
-  LWORD -> Just 4
-  _ -> Nothing
-
-dwordCountOf :: STType -> Maybe Int
-dwordCountOf = \case
-  DWORD -> Just 1
-  LWORD -> Just 2
-  _ -> Nothing
 
 baseNameOfExpr :: Expr -> Text
 baseNameOfExpr = \case

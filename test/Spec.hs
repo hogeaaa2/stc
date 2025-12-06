@@ -1621,3 +1621,152 @@ main = hspec $ do
         other ->
           expectationFailure $
             "unexpected units: " <> show other
+
+  describe "ANY_BIT partial access (writing, parsing)" $ do
+    it "parses bVal.7 on LHS as LBit (PAIndex 7)" $ do
+      let src =
+            "PROGRAM P\n\
+            \VAR\n\
+            \  bVal : BYTE;\n\
+            \END_VAR\n\
+            \bVal.7 := TRUE;\n"
+      expectParsedUnits [src] $ \case
+        [UProgram (Program _ _ [stmt])] ->
+          case stmt of
+            Assign lv _ ->
+              case lv of
+                LBit base (PAIndex 7) ->
+                  case base of
+                    LVar ident ->
+                      locVal ident `shouldBe` "bVal"
+                    other ->
+                      expectationFailure $
+                        "expected LVar base in LBit, got " <> show other
+                other ->
+                  expectationFailure $
+                    "expected LBit (PAIndex 7), got " <> show other
+            other ->
+              expectationFailure $
+                "expected single Assign, got " <> show other
+        other ->
+          expectationFailure $
+            "unexpected units: " <> show other
+
+    it "parses bVal.%X0 on LHS as LBit (PAIndex 0)" $ do
+      let src =
+            "PROGRAM P\n\
+            \VAR\n\
+            \  bVal : BYTE;\n\
+            \END_VAR\n\
+            \bVal.%X0 := FALSE;\n"
+      expectParsedUnits [src] $ \case
+        [UProgram (Program _ _ [stmt])] ->
+          case stmt of
+            Assign lv _ ->
+              case lv of
+                LBit base (PAIndex 0) ->
+                  case base of
+                    LVar ident ->
+                      locVal ident `shouldBe` "bVal"
+                    other ->
+                      expectationFailure $
+                        "expected LVar base in LBit, got " <> show other
+                other ->
+                  expectationFailure $
+                    "expected LBit (PAIndex 0), got " <> show other
+            other ->
+              expectationFailure $
+                "expected single Assign, got " <> show other
+        other ->
+          expectationFailure $
+            "unexpected units: " <> show other
+
+    it "parses dwVal.%B3 on LHS as LBit (PAByte 3)" $ do
+      let src =
+            "PROGRAM P\n\
+            \VAR\n\
+            \  dwVal : DWORD;\n\
+            \  bVal  : BYTE;\n\
+            \END_VAR\n\
+            \dwVal.%B3 := bVal;\n"
+      expectParsedUnits [src] $ \case
+        [UProgram (Program _ _ [stmt])] ->
+          case stmt of
+            Assign lv _ ->
+              case lv of
+                LBit base (PAByte 3) ->
+                  case base of
+                    LVar ident ->
+                      locVal ident `shouldBe` "dwVal"
+                    other ->
+                      expectationFailure $
+                        "expected LVar base in LBit, got " <> show other
+                other ->
+                  expectationFailure $
+                    "expected LBit (PAByte 3), got " <> show other
+            other ->
+              expectationFailure $
+                "expected single Assign, got " <> show other
+        other ->
+          expectationFailure $
+            "unexpected units: " <> show other
+
+    it "parses dwVal.%W1 on LHS as LBit (PAWord 1)" $ do
+      let src =
+            "PROGRAM P\n\
+            \VAR\n\
+            \  dwVal : DWORD;\n\
+            \  w2    : WORD;\n\
+            \END_VAR\n\
+            \dwVal.%W1 := w2;\n"
+      expectParsedUnits [src] $ \case
+        [UProgram (Program _ _ [stmt])] ->
+          case stmt of
+            Assign lv _ ->
+              case lv of
+                LBit base (PAWord 1) ->
+                  case base of
+                    LVar ident ->
+                      locVal ident `shouldBe` "dwVal"
+                    other ->
+                      expectationFailure $
+                        "expected LVar base in LBit, got " <> show other
+                other ->
+                  expectationFailure $
+                    "expected LBit (PAWord 1), got " <> show other
+            other ->
+              expectationFailure $
+                "expected single Assign, got " <> show other
+        other ->
+          expectationFailure $
+            "unexpected units: " <> show other
+
+    it "parses lwVal.%D0 on LHS as LBit (PADword 0)" $ do
+      let src =
+            "PROGRAM P\n\
+            \VAR\n\
+            \  lwVal : LWORD;\n\
+            \  dw2   : DWORD;\n\
+            \END_VAR\n\
+            \lwVal.%D0 := dw2;\n"
+      expectParsedUnits [src] $ \case
+        [UProgram (Program _ _ [stmt])] ->
+          case stmt of
+            Assign lv _ ->
+              case lv of
+                LBit base (PADword 0) ->
+                  case base of
+                    LVar ident ->
+                      locVal ident `shouldBe` "lwVal"
+                    other ->
+                      expectationFailure $
+                        "expected LVar base in LBit, got " <> show other
+                other ->
+                  expectationFailure $
+                    "expected LBit (PADword 0), got " <> show other
+            other ->
+              expectationFailure $
+                "expected single Assign, got " <> show other
+        other ->
+          expectationFailure $
+            "unexpected units: " <> show other

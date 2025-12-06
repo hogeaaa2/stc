@@ -3383,3 +3383,56 @@ main = hspec $ do
         expectUnitsFailWithDetailWithMode @RefToConst mode M.empty [src] $
           \case
             RefToConst v _ -> v == "c"
+
+  describe "ANY_BIT partial access (writing, semantics)" $ do
+    it "allows writing BOOL to bit index of BYTE in both modes" $ do
+      let src =
+            "PROGRAM P\n\
+            \VAR\n\
+            \  bVal : BYTE;\n\
+            \END_VAR\n\
+            \bVal.7 := TRUE;\n\
+            \bVal.%X0 := FALSE;\n"
+      forM_ [Strict, CodesysLike] $ \mode ->
+        expectUnitsPassWithMode mode M.empty [src]
+
+    it "allows writing BYTE/WORD/DWORD slices of DWORD in both modes" $ do
+      let src =
+            "PROGRAM P\n\
+            \VAR\n\
+            \  dwVal : DWORD;\n\
+            \  bVal  : BYTE;\n\
+            \  wVal  : WORD;\n\
+            \  dw2   : DWORD;\n\
+            \END_VAR\n\
+            \dwVal.%B3 := bVal;\n\
+            \dwVal.%W1 := wVal;\n\
+            \dwVal.%D0 := dw2;\n"
+      forM_ [Strict, CodesysLike] $ \mode ->
+        expectUnitsPassWithMode mode M.empty [src]
+
+    it "rejects bit write on non-ANY_BIT base with NotAnAnyBit" $ do
+      let src =
+            "PROGRAM P\n\
+            \VAR\n\
+            \  flag : BOOL;\n\
+            \END_VAR\n\
+            \flag.%X0 := TRUE;\n"
+      forM_ [Strict, CodesysLike] $ \mode ->
+        expectUnitsFailWithDetailWithMode @NotAnAnyBit mode M.empty [src] $
+          \(NotAnAnyBit _ actualTy) ->
+            actualTy == BOOL
+
+    it "rejects assigning non-BOOL to BYTE bit index with TypeMismatch" $ do
+      let src =
+            "PROGRAM P\n\
+            \VAR\n\
+            \  bVal : BYTE;\n\
+            \END_VAR\n\
+            \bVal.7 := 1;\n"
+      forM_ [Strict, CodesysLike] $ \mode ->
+        expectUnitsFailWithDetailWithMode @TypeMismatch mode M.empty [src] $
+          \(TypeMismatch vname _ expected actual) ->
+            vname == "bVal"
+              && expected == BOOL
+              && actual == INT

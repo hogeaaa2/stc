@@ -251,6 +251,7 @@ data LValue
   = LVar Identifier
   | LField LValue Identifier
   | LIndex LValue [Expr]
+  | LBit LValue PartialAccess
   deriving (Eq, Show)
 
 data CallBind
